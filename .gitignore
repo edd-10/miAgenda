@@ -1,0 +1,20 @@
+# Credenciales y secretos (NUNCA subir)
+worker/service-account.json
+*-adminsdk-*.json
+service-account*.json
+.dev.vars
+.env
+.env.*
+!.env.example
+
+# Cachés y dependencias
+.firebase/
+.wrangler/
+node_modules/
+
+# Sistema / editor
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/

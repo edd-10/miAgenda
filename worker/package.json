@@ -1,0 +1,14 @@
+{
+  "name": "mi-agenda-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker (cron) que envía los recordatorios push de Mi Agenda.",
+  "license": "MIT",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

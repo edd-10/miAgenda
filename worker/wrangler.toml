@@ -1,0 +1,11 @@
+name = "miagenda-recordatorios"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# Solo se ejecuta por cron; no necesita URL pública
+workers_dev = false
+preview_urls = false
+
+# Se ejecuta cada minuto
+[triggers]
+crons = ["* * * * *"]

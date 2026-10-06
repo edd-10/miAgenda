@@ -1,0 +1,11 @@
+{
+  "name": "Mi Agenda",
+  "short_name": "Agenda",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7fb",
+  "theme_color": "#3b6ef5",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

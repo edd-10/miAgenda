@@ -1,0 +1,16 @@
+{
+  "name": "mi-agenda",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Agenda web con calendario, pendientes y recordatorios push (Firebase + Cloudflare Worker).",
+  "license": "MIT",
+  "scripts": {
+    "check": "node --check public/app.js && node --check public/firebase-messaging-sw.js && node --check worker/src/index.js && node scripts/check-json.js",
+    "deploy:firestore": "firebase deploy --only firestore",
+    "deploy:hosting": "firebase deploy --only hosting",
+    "deploy:worker": "npm --prefix worker run deploy"
+  },
+  "devDependencies": {
+    "firebase-tools": "^14.0.0"
+  }
+}

@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Esquema de un pendiente. `notified` solo lo cambia el Worker (cuenta de servicio, que ignora las reglas).
+    function validTask(d) {
+      return d.keys().hasOnly(['uid', 'title', 'date', 'time', 'remindMin', 'remindAt', 'notified', 'done', 'createdAt'])
+        && d.keys().hasAll(['uid', 'title', 'date', 'time', 'remindMin', 'remindAt', 'notified', 'done', 'createdAt'])
+        && d.uid is string
+        && d.title is string && d.title.size() >= 1 && d.title.size() <= 120
+        && d.date is string && d.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && d.time is string && d.time.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$')
+        && d.remindMin in [-1, 0, 5, 15, 30, 60, 1440]
+        && (d.remindAt == null || d.remindAt is int)
+        && ((d.remindMin == -1) == (d.remindAt == null))
+        && d.notified is bool
+        && d.done is bool
+        && d.createdAt is timestamp;
+    }
+
+    // Cada usuario solo ve y modifica sus propios pendientes.
+    match /tasks/{id} {
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn()
+                    && request.resource.data.uid == request.auth.uid
+                    && validTask(request.resource.data)
+                    && request.resource.data.notified == false
+                    && request.resource.data.createdAt == request.time;
+      allow update: if signedIn()
+                    && resource.data.uid == request.auth.uid
+                    && request.resource.data.uid == request.auth.uid
+                    && validTask(request.resource.data)
+                    && request.resource.data.notified == resource.data.notified
+                    && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    // Tokens de notificación: solo se escriben/borran los propios (el Worker los lee con cuenta de servicio).
+    match /tokens/{token} {
+      allow create, update: if signedIn()
+                            && request.resource.data.uid == request.auth.uid
+                            && request.resource.data.keys().hasOnly(['uid', 'ua', 'updatedAt'])
+                            && request.resource.data.ua is string && request.resource.data.ua.size() <= 120
+                            && request.resource.data.updatedAt == request.time;
+      allow read, delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+  }
+}

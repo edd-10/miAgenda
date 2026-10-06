@@ -1,0 +1,289 @@
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+const messaging = firebase.messaging.isSupported() ? firebase.messaging() : null;
+
+const $ = (id) => document.getElementById(id);
+const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+
+let user = null;
+let tasks = [];            // todos los pendientes del usuario
+let unsubTasks = null;
+let view = new Date(); view.setDate(1);
+let selectedDate = null;   // "YYYY-MM-DD"
+let fcmToken = null;       // token de este dispositivo (si los avisos están activos)
+let lastFocus = null;      // elemento que abrió el modal, para devolverle el foco
+
+const pad = (n) => String(n).padStart(2, "0");
+const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseKey = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (t.hidden = true), 3000);
+}
+
+/* ---------- Sesión ---------- */
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);   // iPadOS
+
+$("btn-login").onclick = async () => {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  try {
+    if (isMobile) await auth.signInWithRedirect(provider);   // los popups fallan en Safari/iOS
+    else await auth.signInWithPopup(provider);
+  } catch (e) {
+    if (e.code === "auth/popup-blocked") return auth.signInWithRedirect(provider);
+    toast("No se pudo iniciar sesión: " + e.message);
+  }
+};
+// Resultado de la redirección (solo muestra errores; el éxito lo maneja onAuthStateChanged)
+auth.getRedirectResult().catch((e) => toast("No se pudo iniciar sesión: " + e.message));
+$("btn-logout").onclick = async () => {
+  await disablePush();       // el token no debe quedar ligado al usuario que sale
+  try { await auth.signOut(); } catch (e) { toast("No se pudo cerrar sesión: " + e.message); }
+};
+
+auth.onAuthStateChanged((u) => {
+  user = u;
+  $("login").hidden = !!u;
+  $("app").hidden = !u;
+  if (!u) {
+    if (unsubTasks) { unsubTasks(); unsubTasks = null; }
+    tasks = [];
+    if (selectedDate) closeDay();
+    return;
+  }
+  subscribeTasks();
+  setupNotifButton();
+});
+
+// Rango visible del calendario: 6 semanas que empiezan en lunes (incluye días de meses vecinos).
+function gridStart() {
+  const first = new Date(view.getFullYear(), view.getMonth(), 1);
+  const start = new Date(first);
+  start.setDate(1 - ((first.getDay() + 6) % 7));
+  return start;
+}
+
+// Solo escuchamos los pendientes del rango visible; se reemplaza el listener al cambiar de mes.
+function subscribeTasks() {
+  if (unsubTasks) { unsubTasks(); unsubTasks = null; }
+  if (!user) return;
+  const start = gridStart();
+  const end = new Date(start); end.setDate(start.getDate() + 41);
+  unsubTasks = db.collection("tasks")
+    .where("uid", "==", user.uid)
+    .where("date", ">=", keyOf(start))
+    .where("date", "<=", keyOf(end))
+    .onSnapshot(
+      (snap) => {
+        tasks = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        render();
+        if (selectedDate) renderList();
+      },
+      (e) => toast("Error al cargar: " + e.message)
+    );
+}
+
+/* ---------- Calendario ---------- */
+function render() {
+  $("month-title").textContent = `${MESES[view.getMonth()]} ${view.getFullYear()}`;
+  const grid = $("grid");
+  grid.innerHTML = "";
+
+  const start = gridStart();                           // la semana inicia en lunes
+  const todayKey = keyOf(new Date());
+
+  const byDate = {};
+  for (const t of tasks) (byDate[t.date] ||= []).push(t);
+
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    const k = keyOf(d);
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "day" + (d.getMonth() !== view.getMonth() ? " other" : "") + (k === todayKey ? " today" : "");
+    cell.innerHTML = `<span class="num">${d.getDate()}</span>`;
+
+    const list = (byDate[k] || []).sort((a, b) => a.time.localeCompare(b.time));
+    list.slice(0, 3).forEach((t) => {
+      const c = document.createElement("span");
+      c.className = "chip" + (t.done ? " done" : "");
+      c.textContent = `${t.time} ${t.title}`;
+      cell.appendChild(c);
+    });
+    if (list.length > 3) {
+      const m = document.createElement("span");
+      m.className = "more"; m.textContent = `+${list.length - 3} más`;
+      cell.appendChild(m);
+    }
+    cell.onclick = () => openDay(k);
+    grid.appendChild(cell);
+  }
+}
+
+$("prev").onclick = () => { view.setMonth(view.getMonth() - 1); render(); subscribeTasks(); };
+$("next").onclick = () => { view.setMonth(view.getMonth() + 1); render(); subscribeTasks(); };
+$("today").onclick = () => { view = new Date(); view.setDate(1); render(); subscribeTasks(); };
+
+/* ---------- Detalle del día ---------- */
+function openDay(k) {
+  selectedDate = k;
+  lastFocus = document.activeElement;
+  const d = parseKey(k);
+  $("modal-title").textContent = d.toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" });
+  $("modal").hidden = false;
+  renderList();
+  $("f-title").focus();
+}
+function closeDay() {
+  $("modal").hidden = true; selectedDate = null;
+  if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
+  lastFocus = null;
+}
+$("close").onclick = closeDay;
+$("modal").onclick = (e) => { if (e.target === $("modal")) closeDay(); };
+document.addEventListener("keydown", (e) => {
+  if ($("modal").hidden) return;
+  if (e.key === "Escape") return closeDay();
+  if (e.key !== "Tab") return;
+  // Atrapa el foco dentro del modal.
+  const items = [...$("modal").querySelectorAll("button, input, select")].filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!items.length) return;
+  const first = items[0], last = items[items.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+function renderList() {
+  const ul = $("list");
+  ul.innerHTML = "";
+  const list = tasks.filter((t) => t.date === selectedDate).sort((a, b) => a.time.localeCompare(b.time));
+  if (!list.length) {
+    ul.innerHTML = '<li class="empty">Sin pendientes este día</li>';
+    return;
+  }
+  for (const t of list) {
+    const li = document.createElement("li");
+    li.className = "item" + (t.done ? " done" : "");
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = !!t.done; cb.setAttribute("aria-label", `Completado: ${t.title}`);
+    cb.onchange = () => db.collection("tasks").doc(t.id).update({ done: cb.checked });
+
+    const time = document.createElement("span"); time.className = "time"; time.textContent = t.time;
+    const title = document.createElement("span"); title.className = "title"; title.textContent = t.title;
+
+    const del = document.createElement("button");
+    del.className = "icon-btn del"; del.type = "button"; del.textContent = "×"; del.title = "Eliminar"; del.setAttribute("aria-label", `Eliminar: ${t.title}`);
+    del.onclick = () => db.collection("tasks").doc(t.id).delete();
+
+    li.append(cb, time, title, del);
+    ul.appendChild(li);
+  }
+}
+
+$("form").onsubmit = async (e) => {
+  e.preventDefault();
+  const title = $("f-title").value.trim();
+  const time = $("f-time").value;
+  const remindMin = Number($("f-remind").value);
+  if (!title || !time || !selectedDate) return;
+
+  const [y, m, d] = selectedDate.split("-").map(Number);
+  const [hh, mm] = time.split(":").map(Number);
+  const when = new Date(y, m - 1, d, hh, mm).getTime();       // instante absoluto (ms UTC)
+  const remindAt = remindMin >= 0 ? when - remindMin * 60000 : null;
+
+  try {
+    await db.collection("tasks").add({
+      uid: user.uid, title, date: selectedDate, time,
+      remindMin, remindAt, notified: false, done: false,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    $("f-title").value = "";
+    if (remindMin >= 0 && messaging && Notification.permission !== "granted") {
+      toast("Activa los avisos (botón 🔔) para recibir el recordatorio");
+    }
+  } catch (err) {
+    toast("No se pudo guardar: " + err.message);
+  }
+};
+
+/* ---------- Notificaciones push ---------- */
+function updateNotifButtons() {
+  if (!messaging || !("Notification" in window)) return;
+  $("btn-notif").hidden = !!fcmToken || Notification.permission === "denied";
+  $("btn-notif-off").hidden = !fcmToken;
+}
+
+async function setupNotifButton() {
+  if (!messaging || !("Notification" in window)) return;
+  if (Notification.permission === "granted") await registerToken();   // renueva/guarda el token de este dispositivo
+  updateNotifButtons();
+}
+
+$("btn-notif").onclick = async () => {
+  const perm = await Notification.requestPermission();
+  if (perm === "granted") {
+    await registerToken();
+    updateNotifButtons();
+    if (fcmToken) toast("Avisos activados en este dispositivo");
+  } else {
+    toast("Permiso de notificaciones denegado");
+  }
+};
+
+$("btn-notif-off").onclick = async () => {
+  await disablePush();
+  updateNotifButtons();
+  toast("Avisos desactivados en este dispositivo");
+};
+
+async function registerToken() {
+  try {
+    const reg = await navigator.serviceWorker.register("firebase-messaging-sw.js");
+    const token = await messaging.getToken({ vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
+    if (!token) return;
+    await db.collection("tokens").doc(token).set({
+      uid: user.uid,
+      ua: navigator.userAgent.slice(0, 120),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    fcmToken = token;          // solo "activo" si el Worker ya puede conocer el token
+  } catch (e) {
+    toast("No se pudieron activar los avisos: " + e.message);
+  }
+}
+
+// Desvincula este dispositivo: borra su documento de tokens e invalida el token en FCM.
+async function disablePush() {
+  if (!messaging || !user) return;
+  let token = fcmToken;
+  try {
+    if (!token && Notification.permission === "granted") {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) token = await messaging.getToken({ vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
+    }
+  } catch (e) {
+    console.warn("No se pudo obtener el token:", e);
+  }
+  // Pasos independientes: aunque falle el borrado en Firestore (p. ej. sin red), el token se invalida en FCM
+  // y el Worker lo limpiará solo al recibir UNREGISTERED.
+  try { if (token) await db.collection("tokens").doc(token).delete(); }
+  catch (e) { console.warn("No se pudo borrar el token en Firestore:", e); }
+  try { await messaging.deleteToken(); }
+  catch (e) { console.warn("No se pudo invalidar el token en FCM:", e); }
+  fcmToken = null;
+}
+
+// App abierta: FCM no muestra nada solo, así que lo mostramos nosotros.
+if (messaging) {
+  messaging.onMessage((p) => {
+    const n = p.notification || {};
+    toast(`⏰ ${n.title || ""} ${n.body || ""}`.trim());
+  });
+}
