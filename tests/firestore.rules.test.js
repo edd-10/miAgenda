@@ -113,6 +113,48 @@ for (const [name, over] of Object.entries(invalidUpdates)) {
   });
 }
 
+test("tasks: el dueño puede editar título, fecha, hora y aviso a la vez", async () => {
+  await seedTask();
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), {
+    title: "Dentista (reprogramado)", date: "2026-10-20", time: "11:00", remindMin: 30, remindAt: 1760947800000,
+  }));
+});
+
+test("tasks: el dueño puede quitar el aviso de un pendiente", async () => {
+  await seedTask();
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { remindMin: -1, remindAt: null }));
+});
+
+test("tasks: al reprogramar un aviso ya enviado se puede volver a armar notified", async () => {
+  await seedTask("t1", { notified: true });
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), {
+    time: "18:00", remindAt: 1760547600000, notified: false,
+  }));
+});
+
+test("tasks: no se puede volver a armar notified sin reprogramar (mismo remindAt)", async () => {
+  await seedTask("t1", { notified: true });
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { notified: false }));
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { title: "otro", notified: false }));
+});
+
+test("tasks: reprogramar no permite marcar notified en true", async () => {
+  await seedTask();
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { remindAt: 1760547600000, notified: true }));
+});
+
+test("tasks: editar con remindMin y remindAt inconsistentes se rechaza", async () => {
+  await seedTask();
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { remindMin: -1 }));          // remindAt sigue numérico
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { remindMin: 5, remindAt: null }));
+});
+
+test("tasks: editar con fecha u hora inválidas se rechaza", async () => {
+  await seedTask();
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { date: "mañana" }));
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { time: "25:00" }));
+});
+
 test("tasks: otro usuario o sin sesión no puede actualizar", async () => {
   await seedTask();
   await assertFails(updateDoc(doc(bob(), "tasks/t1"), { done: true }));

@@ -13,6 +13,7 @@ let view = new Date(); view.setDate(1);
 let selectedDate = null;   // "YYYY-MM-DD"
 let fcmToken = null;       // token de este dispositivo (si los avisos están activos)
 let lastFocus = null;      // elemento que abrió el modal, para devolverle el foco
+let editingId = null;      // id del pendiente que se está editando (null = formulario de alta)
 
 const pad = (n) => String(n).padStart(2, "0");
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -132,6 +133,7 @@ $("today").onclick = () => { view = new Date(); view.setDate(1); render(); subsc
 /* ---------- Detalle del día ---------- */
 function openDay(k) {
   selectedDate = k;
+  cancelEdit();
   lastFocus = document.activeElement;
   const d = parseKey(k);
   $("modal-title").textContent = d.toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" });
@@ -140,6 +142,7 @@ function openDay(k) {
   $("f-title").focus();
 }
 function closeDay() {
+  cancelEdit();
   $("modal").hidden = true; selectedDate = null;
   if (lastFocus && document.contains(lastFocus)) lastFocus.focus();
   lastFocus = null;
@@ -168,7 +171,7 @@ function renderList() {
   }
   for (const t of list) {
     const li = document.createElement("li");
-    li.className = "item" + (t.done ? " done" : "");
+    li.className = "item" + (t.done ? " done" : "") + (t.id === editingId ? " editing" : "");
 
     const cb = document.createElement("input");
     cb.type = "checkbox"; cb.checked = !!t.done; cb.setAttribute("aria-label", `Completado: ${t.title}`);
@@ -177,30 +180,61 @@ function renderList() {
     const time = document.createElement("span"); time.className = "time"; time.textContent = t.time;
     const title = document.createElement("span"); title.className = "title"; title.textContent = t.title;
 
+    const ed = document.createElement("button");
+    ed.className = "icon-btn edit"; ed.type = "button"; ed.textContent = "✎"; ed.title = "Editar";
+    ed.setAttribute("aria-label", `Editar: ${t.title}`);
+    ed.onclick = () => startEdit(t);
+
     const del = document.createElement("button");
     del.className = "icon-btn del"; del.type = "button"; del.textContent = "×"; del.title = "Eliminar"; del.setAttribute("aria-label", `Eliminar: ${t.title}`);
     del.onclick = () => db.collection("tasks").doc(t.id).delete();
 
-    li.append(cb, time, title, del);
+    li.append(cb, time, title, ed, del);
     ul.appendChild(li);
   }
 }
+
+function startEdit(t) {
+  editingId = t.id;
+  $("f-title").value = t.title;
+  $("f-time").value = t.time;
+  $("f-remind").value = String(t.remindMin);
+  $("f-date").value = t.date;
+  $("f-date-row").hidden = false;
+  $("f-submit").textContent = "Guardar";
+  $("f-cancel").hidden = false;
+  renderList();
+  $("f-title").focus();
+}
+
+function cancelEdit() {
+  editingId = null;
+  $("form").reset();
+  $("f-date-row").hidden = true;
+  $("f-submit").textContent = "Agregar";
+  $("f-cancel").hidden = true;
+  if (selectedDate) renderList();
+}
+$("f-cancel").onclick = cancelEdit;
 
 $("form").onsubmit = async (e) => {
   e.preventDefault();
   const title = $("f-title").value.trim();
   const time = $("f-time").value;
   const remindMin = Number($("f-remind").value);
-  if (!title || !time || !selectedDate) return;
+  const date = editingId ? $("f-date").value : selectedDate;
+  if (!title || !time || !date) return;
 
-  const [y, m, d] = selectedDate.split("-").map(Number);
+  const [y, m, d] = date.split("-").map(Number);
   const [hh, mm] = time.split(":").map(Number);
   const when = new Date(y, m - 1, d, hh, mm).getTime();       // instante absoluto (ms UTC)
   const remindAt = remindMin >= 0 ? when - remindMin * 60000 : null;
 
+  if (editingId) return saveEdit({ title, date, time, remindMin, remindAt });
+
   try {
     await db.collection("tasks").add({
-      uid: user.uid, title, date: selectedDate, time,
+      uid: user.uid, title, date, time,
       remindMin, remindAt, notified: false, done: false,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
@@ -212,6 +246,20 @@ $("form").onsubmit = async (e) => {
     toast("No se pudo guardar: " + err.message);
   }
 };
+
+async function saveEdit(data) {
+  const old = tasks.find((t) => t.id === editingId);
+  if (!old) { toast("Ese pendiente ya no existe"); return cancelEdit(); }
+  // Si ya se había avisado y el aviso cambia, se vuelve a armar para que se envíe de nuevo.
+  if (old.notified && data.remindAt !== old.remindAt) data.notified = false;
+  try {
+    await db.collection("tasks").doc(editingId).update(data);
+    toast(data.date !== old.date ? `Movido al ${data.date}` : "Cambios guardados");
+    cancelEdit();
+  } catch (err) {
+    toast("No se pudo guardar: " + err.message);
+  }
+}
 
 /* ---------- Notificaciones push ---------- */
 function updateNotifButtons() {
