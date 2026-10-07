@@ -18,3 +18,8 @@ Thumbs.db
 *.log
 .vscode/
 .idea/
+
+# Emulador de Firebase
+*-debug.log
+firestore-debug.log
+ui-debug.log

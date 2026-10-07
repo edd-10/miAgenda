@@ -20,3 +20,19 @@ jobs:
           if git ls-files | grep -E 'service-account.*\.json|adminsdk.*\.json'; then
             echo "Hay credenciales versionadas"; exit 1
           fi
+
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Pruebas de reglas de Firestore (emulador)
+        run: npm run test:rules

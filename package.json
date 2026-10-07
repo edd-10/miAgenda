@@ -8,9 +8,12 @@
     "check": "node --check public/app.js && node --check public/firebase-messaging-sw.js && node --check worker/src/index.js && node scripts/check-json.js",
     "deploy:firestore": "firebase deploy --only firestore",
     "deploy:hosting": "firebase deploy --only hosting",
-    "deploy:worker": "npm --prefix worker run deploy"
+    "deploy:worker": "npm --prefix worker run deploy",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-miagenda \"node --test\""
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
+    "firebase": "^12.19.0",
     "firebase-tools": "^14.0.0"
   }
 }

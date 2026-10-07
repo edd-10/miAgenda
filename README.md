@@ -66,8 +66,11 @@ npm run deploy:hosting     # aplicación web
 
 ```bash
 npm run check              # sintaxis de JS y validez de los JSON
+npm run test:rules         # pruebas de firestore.rules con el emulador (requiere Java 21+)
 npx firebase emulators:start --only hosting,firestore,auth
 ```
+
+`test:rules` descarga el emulador de Firestore la primera vez. En Windows, a veces el proceso de Java del emulador queda abierto al terminar y ocupa el puerto 8080; si la siguiente ejecución dice "port taken", cierra ese proceso `java` y vuelve a intentarlo.
 
 Para ver los logs del Worker: `npm --prefix worker run tail`.
 
@@ -82,7 +85,7 @@ Para ver los logs del Worker: `npm --prefix worker run tail`.
 - Las ejecuciones del Worker no usan exclusión mutua; si dos se solaparan podría enviarse un aviso duplicado.
 - Un aviso que llega a un dispositivo pero falla temporalmente en otro se da por enviado.
 - Los recordatorios con más de 24 h de retraso se descartan.
-- No hay modo offline completo ni pruebas automatizadas de las reglas todavía.
+- No hay modo offline completo ni pruebas del Worker todavía.
 
 ## Licencia
 
