@@ -14,16 +14,28 @@ let selectedDate = null;   // "YYYY-MM-DD"
 let fcmToken = null;       // token de este dispositivo (si los avisos están activos)
 let lastFocus = null;      // elemento que abrió el modal, para devolverle el foco
 let editingId = null;      // id del pendiente que se está editando (null = formulario de alta)
+const pendingDeletes = new Set();   // ids ocultos que se borran de Firestore al vencer UNDO_MS
+let deleteTimer = null;
+const UNDO_MS = 6000;
+const visibleTasks = () => tasks.filter((t) => !pendingDeletes.has(t.id));
 
 const pad = (n) => String(n).padStart(2, "0");
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const parseKey = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
 
-function toast(msg) {
+// action = { label, onClick, ms }: añade un botón (p. ej. "Deshacer") y alarga el tiempo en pantalla.
+function toast(msg, action) {
   const t = $("toast");
-  t.textContent = msg; t.hidden = false;
+  t.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = action.label;
+    b.onclick = () => { t.hidden = true; clearTimeout(toast._t); action.onClick(); };
+    t.append(b);
+  }
+  t.hidden = false;
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => (t.hidden = true), 3000);
+  toast._t = setTimeout(() => (t.hidden = true), action?.ms || 3000);
 }
 
 /* ---------- Sesión ---------- */
@@ -43,6 +55,7 @@ $("btn-login").onclick = async () => {
 // Resultado de la redirección (solo muestra errores; el éxito lo maneja onAuthStateChanged)
 auth.getRedirectResult().catch((e) => toast("No se pudo iniciar sesión: " + e.message));
 $("btn-logout").onclick = async () => {
+  await flushDeletes();      // los borrados en espera se confirman antes de salir
   await disablePush();       // el token no debe quedar ligado al usuario que sale
   try { await auth.signOut(); } catch (e) { toast("No se pudo cerrar sesión: " + e.message); }
 };
@@ -99,7 +112,7 @@ function render() {
   const todayKey = keyOf(new Date());
 
   const byDate = {};
-  for (const t of tasks) (byDate[t.date] ||= []).push(t);
+  for (const t of visibleTasks()) (byDate[t.date] ||= []).push(t);
 
   for (let i = 0; i < 42; i++) {
     const d = new Date(start); d.setDate(start.getDate() + i);
@@ -154,7 +167,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") return closeDay();
   if (e.key !== "Tab") return;
   // Atrapa el foco dentro del modal.
-  const items = [...$("modal").querySelectorAll("button, input, select")].filter((el) => !el.disabled && el.offsetParent !== null);
+  const items = [...$("modal").querySelectorAll("button, input, select"), ...$("toast").querySelectorAll("button")]
+    .filter((el) => !el.disabled && el.offsetParent !== null);
   if (!items.length) return;
   const first = items[0], last = items[items.length - 1];
   if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
@@ -164,7 +178,7 @@ document.addEventListener("keydown", (e) => {
 function renderList() {
   const ul = $("list");
   ul.innerHTML = "";
-  const list = tasks.filter((t) => t.date === selectedDate).sort((a, b) => a.time.localeCompare(b.time));
+  const list = visibleTasks().filter((t) => t.date === selectedDate).sort((a, b) => a.time.localeCompare(b.time));
   if (!list.length) {
     ul.innerHTML = '<li class="empty">Sin pendientes este día</li>';
     return;
@@ -187,12 +201,41 @@ function renderList() {
 
     const del = document.createElement("button");
     del.className = "icon-btn del"; del.type = "button"; del.textContent = "×"; del.title = "Eliminar"; del.setAttribute("aria-label", `Eliminar: ${t.title}`);
-    del.onclick = () => db.collection("tasks").doc(t.id).delete();
+    del.onclick = () => scheduleDelete(t);
 
     li.append(cb, time, title, ed, del);
     ul.appendChild(li);
   }
 }
+
+// Eliminar con "Deshacer": el pendiente se oculta y solo se borra de Firestore si pasan UNDO_MS sin deshacer.
+function scheduleDelete(t) {
+  pendingDeletes.add(t.id);
+  if (editingId === t.id) cancelEdit();
+  render(); if (selectedDate) renderList();
+  const n = pendingDeletes.size;
+  toast(n === 1 ? "Pendiente eliminado" : `${n} pendientes eliminados`, { label: "Deshacer", onClick: undoDelete, ms: UNDO_MS });
+  clearTimeout(deleteTimer);
+  deleteTimer = setTimeout(flushDeletes, UNDO_MS);
+}
+
+function undoDelete() {
+  clearTimeout(deleteTimer);
+  pendingDeletes.clear();
+  render(); if (selectedDate) renderList();
+}
+
+// Borra de verdad los pendientes ocultos (al vencer el plazo, al cerrar sesión o al salir de la página).
+async function flushDeletes() {
+  clearTimeout(deleteTimer);
+  const ids = [...pendingDeletes];
+  if (!ids.length) return;
+  const results = await Promise.allSettled(ids.map((id) => db.collection("tasks").doc(id).delete()));
+  ids.forEach((id) => pendingDeletes.delete(id));
+  if (results.some((r) => r.status === "rejected")) toast("No se pudo eliminar algún pendiente");
+  render(); if (selectedDate) renderList();
+}
+window.addEventListener("pagehide", flushDeletes);
 
 function startEdit(t) {
   editingId = t.id;
