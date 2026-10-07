@@ -220,7 +220,22 @@ function updateNotifButtons() {
   $("btn-notif-off").hidden = !fcmToken;
 }
 
+// iOS solo permite push en la app instalada en la pantalla de inicio (iOS 16.4+): en Safari normal no hay Notification.
+const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isStandalone = navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
+
+function setupIosHint() {
+  let dismissed = false;
+  try { dismissed = localStorage.getItem("iosHintDismissed") === "1"; } catch (_) {}
+  $("ios-hint").hidden = !(isIOS && !isStandalone && !dismissed);
+}
+$("ios-hint-close").onclick = () => {
+  $("ios-hint").hidden = true;
+  try { localStorage.setItem("iosHintDismissed", "1"); } catch (_) {}
+};
+
 async function setupNotifButton() {
+  setupIosHint();
   if (!messaging || !("Notification" in window)) return;
   if (Notification.permission === "granted") await registerToken();   // renueva/guarda el token de este dispositivo
   updateNotifButtons();
