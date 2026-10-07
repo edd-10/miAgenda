@@ -112,6 +112,12 @@ main { max-width: 1100px; margin: 0 auto; padding-bottom: 24px; }
 }
 .hint p { margin: 0; flex: 1; font-size: 14px; }
 
+.toast button {
+  margin-left: 12px; padding: 4px 8px; background: none; border: 0; border-radius: 6px;
+  color: #9db8ff; font-weight: 600; cursor: pointer;
+}
+.toast button:hover, .toast button:focus-visible { background: rgba(255, 255, 255, .15); }
+
 @media (max-width: 600px) {
   body { padding-left: 6px; padding-right: 6px; }
   .grid, .weekdays { gap: 3px; }
