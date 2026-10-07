@@ -62,6 +62,7 @@
       <ul id="list" class="list"></ul>
       <form id="form" class="form">
         <input id="f-title" type="text" aria-label="Título del pendiente" placeholder="Nuevo pendiente" maxlength="120" required>
+        <label id="f-date-row" hidden>Fecha <input id="f-date" type="date"></label>
         <div class="row">
           <label>Hora <input id="f-time" type="time" value="09:00" required></label>
           <label>Avisar
@@ -76,7 +77,10 @@
             </select>
           </label>
         </div>
-        <button class="btn primary" type="submit">Agregar</button>
+        <div class="form-actions">
+          <button id="f-submit" class="btn primary" type="submit">Agregar</button>
+          <button id="f-cancel" class="btn" type="button" hidden>Cancelar</button>
+        </div>
       </form>
     </div>
   </div>

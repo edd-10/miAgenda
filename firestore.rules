@@ -34,7 +34,11 @@ service cloud.firestore {
                     && resource.data.uid == request.auth.uid
                     && request.resource.data.uid == request.auth.uid
                     && validTask(request.resource.data)
-                    && request.resource.data.notified == resource.data.notified
+                    // `notified` solo lo pone en true el Worker. El cliente puede volver a armarlo (false) únicamente
+                    // al reprogramar el aviso (cambia remindAt); en cualquier otro caso debe dejarlo igual.
+                    && (request.resource.data.notified == resource.data.notified
+                        || (request.resource.data.notified == false
+                            && request.resource.data.remindAt != resource.data.remindAt))
                     && request.resource.data.createdAt == resource.data.createdAt;
       allow delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
