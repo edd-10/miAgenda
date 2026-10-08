@@ -26,13 +26,13 @@
   <!-- App -->
   <div id="app" hidden>
     <header class="topbar">
-      <div class="nav">
+      <div id="nav" class="nav">
         <button id="prev" class="icon-btn" aria-label="Mes anterior">&#8249;</button>
         <h2 id="month-title"></h2>
         <button id="next" class="icon-btn" aria-label="Mes siguiente">&#8250;</button>
       </div>
       <div class="actions">
-        <button id="today" class="btn">Hoy</button>
+        <button id="today" class="btn">Este mes</button>
         <button id="btn-notif" class="btn" hidden>&#128276; Activar avisos</button>
         <button id="btn-notif-off" class="btn" hidden>Desactivar avisos</button>
         <button id="btn-logout" class="btn">Salir</button>
@@ -44,11 +44,29 @@
       <button id="ios-hint-close" class="icon-btn" type="button" aria-label="Cerrar aviso">&times;</button>
     </div>
 
+    <nav class="tabs" aria-label="Vista">
+      <button id="tab-month" class="tab" type="button" aria-current="page">Calendario</button>
+      <button id="tab-today" class="tab" type="button">Hoy</button>
+    </nav>
+
     <main>
-      <div class="weekdays">
-        <span>Lun</span><span>Mar</span><span>Mié</span><span>Jue</span><span>Vie</span><span>Sáb</span><span>Dom</span>
+      <div id="view-month">
+        <div class="weekdays">
+          <span>Lun</span><span>Mar</span><span>Mié</span><span>Jue</span><span>Vie</span><span>Sáb</span><span>Dom</span>
+        </div>
+        <div id="grid" class="grid"></div>
       </div>
-      <div id="grid" class="grid"></div>
+
+      <section id="view-today" hidden aria-labelledby="today-title">
+        <div class="today-head">
+          <div>
+            <h2 id="today-title"></h2>
+            <p id="today-summary" class="muted"></p>
+          </div>
+          <button id="today-add" class="btn primary" type="button">+ Agregar</button>
+        </div>
+        <ul id="today-list" class="list"></ul>
+      </section>
     </main>
   </div>
 

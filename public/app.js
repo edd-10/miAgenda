@@ -14,12 +14,14 @@ let selectedDate = null;   // "YYYY-MM-DD"
 let fcmToken = null;       // token de este dispositivo (si los avisos están activos)
 let lastFocus = null;      // elemento que abrió el modal, para devolverle el foco
 let editingId = null;      // id del pendiente que se está editando (null = formulario de alta)
+let mode = "month";        // vista activa: "month" (calendario) o "today"
 const pendingDeletes = new Set();   // ids ocultos que se borran de Firestore al vencer UNDO_MS
 let deleteTimer = null;
 const UNDO_MS = 6000;
 const visibleTasks = () => tasks.filter((t) => !pendingDeletes.has(t.id));
 
 const pad = (n) => String(n).padStart(2, "0");
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const parseKey = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
 
@@ -70,6 +72,7 @@ auth.onAuthStateChanged((u) => {
     if (selectedDate) closeDay();
     return;
   }
+  setMode(loadMode());
   subscribeTasks();
   setupNotifButton();
 });
@@ -95,11 +98,55 @@ function subscribeTasks() {
     .onSnapshot(
       (snap) => {
         tasks = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        render();
-        if (selectedDate) renderList();
+        refresh();
       },
       (e) => toast("Error al cargar: " + e.message)
     );
+}
+
+/* ---------- Vistas ---------- */
+// Redibuja lo que esté a la vista: calendario, lista del día abierto y/o vista "Hoy".
+function refresh() {
+  render();
+  if (selectedDate) renderList();
+  if (mode === "today") renderToday();
+}
+
+function loadMode() {
+  try { return localStorage.getItem("mode") === "today" ? "today" : "month"; } catch (_) { return "month"; }
+}
+
+// Solo cambia lo visible; quien llama vuelve a suscribirse si hace falta (en "Hoy" el mes mostrado es el actual).
+function setMode(m) {
+  mode = m;
+  try { localStorage.setItem("mode", m); } catch (_) {}
+  if (m === "today") { view = new Date(); view.setDate(1); }
+  $("view-month").hidden = m !== "month";
+  $("view-today").hidden = m !== "today";
+  $("nav").hidden = m !== "month";
+  $("today").hidden = m !== "month";
+  for (const [id, active] of [["tab-month", m === "month"], ["tab-today", m === "today"]]) {
+    if (active) $(id).setAttribute("aria-current", "page"); else $(id).removeAttribute("aria-current");
+  }
+}
+
+$("tab-month").onclick = () => { if (mode !== "month") { setMode("month"); refresh(); } };
+$("tab-today").onclick = () => { if (mode !== "today") { setMode("today"); subscribeTasks(); refresh(); } };
+$("today-add").onclick = () => openDay(keyOf(new Date()));
+
+function renderToday() {
+  const key = keyOf(new Date());
+  $("today-title").textContent = cap(parseKey(key).toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" }));
+  const ul = $("today-list");
+  ul.innerHTML = "";
+  const list = visibleTasks().filter((t) => t.date === key).sort((a, b) => a.time.localeCompare(b.time));
+  const done = list.filter((t) => t.done).length;
+  $("today-summary").textContent = list.length ? `${done} de ${list.length} completados` : "";
+  if (!list.length) {
+    ul.innerHTML = '<li class="empty">Sin pendientes para hoy</li>';
+    return;
+  }
+  for (const t of list) ul.appendChild(buildItem(t));
 }
 
 /* ---------- Calendario ---------- */
@@ -149,7 +196,7 @@ function openDay(k) {
   cancelEdit();
   lastFocus = document.activeElement;
   const d = parseKey(k);
-  $("modal-title").textContent = d.toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" });
+  $("modal-title").textContent = cap(d.toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" }));
   $("modal").hidden = false;
   renderList();
   $("f-title").focus();
@@ -183,36 +230,38 @@ function renderList() {
     ul.innerHTML = '<li class="empty">Sin pendientes este día</li>';
     return;
   }
-  for (const t of list) {
-    const li = document.createElement("li");
-    li.className = "item" + (t.done ? " done" : "") + (t.id === editingId ? " editing" : "");
+  for (const t of list) ul.appendChild(buildItem(t));
+}
 
-    const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = !!t.done; cb.setAttribute("aria-label", `Completado: ${t.title}`);
-    cb.onchange = () => db.collection("tasks").doc(t.id).update({ done: cb.checked });
+function buildItem(t) {
+  const li = document.createElement("li");
+  li.className = "item" + (t.done ? " done" : "") + (t.id === editingId ? " editing" : "");
 
-    const time = document.createElement("span"); time.className = "time"; time.textContent = t.time;
-    const title = document.createElement("span"); title.className = "title"; title.textContent = t.title;
+  const cb = document.createElement("input");
+  cb.type = "checkbox"; cb.checked = !!t.done; cb.setAttribute("aria-label", `Completado: ${t.title}`);
+  cb.onchange = () => db.collection("tasks").doc(t.id).update({ done: cb.checked });
 
-    const ed = document.createElement("button");
-    ed.className = "icon-btn edit"; ed.type = "button"; ed.textContent = "✎"; ed.title = "Editar";
-    ed.setAttribute("aria-label", `Editar: ${t.title}`);
-    ed.onclick = () => startEdit(t);
+  const time = document.createElement("span"); time.className = "time"; time.textContent = t.time;
+  const title = document.createElement("span"); title.className = "title"; title.textContent = t.title;
 
-    const del = document.createElement("button");
-    del.className = "icon-btn del"; del.type = "button"; del.textContent = "×"; del.title = "Eliminar"; del.setAttribute("aria-label", `Eliminar: ${t.title}`);
-    del.onclick = () => scheduleDelete(t);
+  const ed = document.createElement("button");
+  ed.className = "icon-btn edit"; ed.type = "button"; ed.textContent = "✎"; ed.title = "Editar";
+  ed.setAttribute("aria-label", `Editar: ${t.title}`);
+  ed.onclick = () => { if ($("modal").hidden) openDay(t.date); startEdit(t); };
 
-    li.append(cb, time, title, ed, del);
-    ul.appendChild(li);
-  }
+  const del = document.createElement("button");
+  del.className = "icon-btn del"; del.type = "button"; del.textContent = "×"; del.title = "Eliminar"; del.setAttribute("aria-label", `Eliminar: ${t.title}`);
+  del.onclick = () => scheduleDelete(t);
+
+  li.append(cb, time, title, ed, del);
+  return li;
 }
 
 // Eliminar con "Deshacer": el pendiente se oculta y solo se borra de Firestore si pasan UNDO_MS sin deshacer.
 function scheduleDelete(t) {
   pendingDeletes.add(t.id);
   if (editingId === t.id) cancelEdit();
-  render(); if (selectedDate) renderList();
+  refresh();
   const n = pendingDeletes.size;
   toast(n === 1 ? "Pendiente eliminado" : `${n} pendientes eliminados`, { label: "Deshacer", onClick: undoDelete, ms: UNDO_MS });
   clearTimeout(deleteTimer);
@@ -222,7 +271,7 @@ function scheduleDelete(t) {
 function undoDelete() {
   clearTimeout(deleteTimer);
   pendingDeletes.clear();
-  render(); if (selectedDate) renderList();
+  refresh();
 }
 
 // Borra de verdad los pendientes ocultos (al vencer el plazo, al cerrar sesión o al salir de la página).
@@ -233,7 +282,7 @@ async function flushDeletes() {
   const results = await Promise.allSettled(ids.map((id) => db.collection("tasks").doc(id).delete()));
   ids.forEach((id) => pendingDeletes.delete(id));
   if (results.some((r) => r.status === "rejected")) toast("No se pudo eliminar algún pendiente");
-  render(); if (selectedDate) renderList();
+  refresh();
 }
 window.addEventListener("pagehide", flushDeletes);
 
