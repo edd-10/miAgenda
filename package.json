@@ -5,11 +5,13 @@
   "description": "Agenda web con calendario, pendientes y recordatorios push (Firebase + Cloudflare Worker).",
   "license": "MIT",
   "scripts": {
-    "check": "node --check public/app.js && node --check public/firebase-messaging-sw.js && node --check worker/src/index.js && node scripts/check-json.js",
+    "check": "node --check public/app.js && node --check public/firebase-messaging-sw.js && node --check worker/src/index.js && node --check worker/src/reminders.mjs && node --check worker/src/google-auth.mjs && node scripts/check-json.js",
     "deploy:firestore": "firebase deploy --only firestore",
     "deploy:hosting": "firebase deploy --only hosting",
     "deploy:worker": "npm --prefix worker run deploy",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-miagenda \"node --test\""
+    "test:rules": "firebase emulators:exec --only firestore --project demo-miagenda \"node --test tests/*.test.js\"",
+    "test:worker": "node --test \"worker/test/*.test.mjs\"",
+    "test": "npm run test:worker && npm run test:rules"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.2",
