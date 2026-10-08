@@ -66,13 +66,21 @@ npm run deploy:hosting     # aplicación web
 
 ```bash
 npm run check              # sintaxis de JS y validez de los JSON
+npm run test:worker        # pruebas de la lógica de recordatorios (reloj simulado, sin dependencias)
 npm run test:rules         # pruebas de firestore.rules con el emulador (requiere Java 21+)
+npm test                   # las dos anteriores
 npx firebase emulators:start --only hosting,firestore,auth
 ```
 
 `test:rules` descarga el emulador de Firestore la primera vez. En Windows, a veces el proceso de Java del emulador queda abierto al terminar y ocupa el puerto 8080; si la siguiente ejecución dice "port taken", cierra ese proceso `java` y vuelve a intentarlo.
 
 Para ver los logs del Worker: `npm --prefix worker run tail`.
+
+## Precisión de los avisos
+
+El cron de Cloudflare no corre al segundo `:00` (en este proyecto corre al `:51`), así que el Worker **no** envía lo que "ya venció": en cada ejecución atiende lo que vence en los próximos ~75 s, reserva cada tarea de forma atómica (marcándola con una condición sobre `updateTime`), espera hasta `LEAD_MS` antes de la hora exacta, vuelve a leerla por si se borró, completó o reprogramó, y entonces envía. Así el aviso sale a la hora sin depender del segundo del cron y sin duplicados entre ejecuciones solapadas. Los parámetros (`LEAD_MS`, `LOOKAHEAD_MS`, `BATCH_LIMIT`…) están en `worker/src/reminders.mjs`.
+
+La entrega final al dispositivo depende de FCM y del sistema operativo (normalmente 1–3 s); no se puede garantizar el segundo exacto.
 
 ## Notas de seguridad
 
@@ -82,7 +90,6 @@ Para ver los logs del Worker: `npm --prefix worker run tail`.
 
 ## Limitaciones conocidas
 
-- Las ejecuciones del Worker no usan exclusión mutua; si dos se solaparan podría enviarse un aviso duplicado.
 - Un aviso que llega a un dispositivo pero falla temporalmente en otro se da por enviado.
 - Los recordatorios con más de 24 h de retraso se descartan.
 - No hay modo offline completo ni pruebas del Worker todavía.

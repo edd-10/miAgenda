@@ -15,6 +15,8 @@ jobs:
           node-version: 22
       - name: Sintaxis JS y JSON
         run: npm run check
+      - name: Pruebas del Worker (reloj simulado)
+        run: npm run test:worker
       - name: Que no se hayan subido credenciales
         run: |
           if git ls-files | grep -E 'service-account.*\.json|adminsdk.*\.json'; then
