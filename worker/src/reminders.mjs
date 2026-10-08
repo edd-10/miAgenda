@@ -17,6 +17,14 @@ const str = (f) => f?.stringValue;
 const int = (f) => (f?.integerValue !== undefined ? Number(f.integerValue) : f?.doubleValue);
 const idOf = (doc) => doc.name.split("/").pop();
 
+// "21:30" → "21:30" (24 h) o "9:30 p. m." (12 h). Debe dar lo mismo que public/format.js (una prueba lo comprueba).
+export function formatTime(hhmm, fmt) {
+  const m = /^(\d{2}):(\d{2})$/.exec(hhmm || "");
+  if (!m || fmt !== "12") return hhmm || "";
+  const h = Number(m[1]);
+  return `${h % 12 || 12}:${m[2]} ${h < 12 ? "a. m." : "p. m."}`;
+}
+
 function makeCtx(env, deps) {
   const sa = JSON.parse(env.SERVICE_ACCOUNT);
   return {
@@ -76,6 +84,19 @@ async function readTask(c, id) {
   return res.json();
 }
 
+// Formato de hora de la cuenta (users/{uid}.timeFormat). Cualquier fallo o ausencia → 24 h: nunca impide el aviso.
+async function readTimeFormat(c, uid) {
+  try {
+    const res = await c.fetch(`${fsBase(c.pid)}/users/${encodeURIComponent(uid)}`, { headers: headers(c) });
+    if (res.status === 404) return "24";
+    if (!res.ok) { c.log("No se pudieron leer las preferencias:", res.status); return "24"; }
+    return str((await res.json()).fields?.timeFormat) === "12" ? "12" : "24";
+  } catch (e) {
+    c.log("No se pudieron leer las preferencias:", String(e));
+    return "24";
+  }
+}
+
 /* ---------- Envío (FCM) ---------- */
 // Devuelve "ok", "gone" (token inválido, ya borrado), "retry" (fallo temporal) o "failed" (permanente).
 async function sendToDevice(c, deviceToken, task) {
@@ -87,7 +108,9 @@ async function sendToDevice(c, deviceToken, task) {
         token: deviceToken,
         notification: {
           title: `⏰ ${task.title}`,
-          body: task.remindMin > 0 ? `Es a las ${task.time}` : `Ahora · ${task.time}`,
+          body: task.remindMin > 0
+            ? `Es a las ${formatTime(task.time, task.timeFormat)}`
+            : `Ahora · ${formatTime(task.time, task.timeFormat)}`,
         },
         webpush: { fcm_options: { link: `https://${c.pid}.web.app/` }, headers: { Urgency: "high" } },
       },
@@ -108,7 +131,7 @@ async function sendToDevice(c, deviceToken, task) {
 
 /* ---------- Una tarea ---------- */
 // Resultados: "sent" | "no-devices" | "dropped" | "retry" | "skipped" | "deleted" | "done" | "rescheduled"
-async function processTask(c, doc, tokensFor) {
+async function processTask(c, doc, tokensFor, prefsFor) {
   const { LEAD_MS, RECHECK_MS } = c.config;
   const id = idOf(doc);
   const dueAt = int(doc.fields.remindAt);
@@ -117,8 +140,10 @@ async function processTask(c, doc, tokensFor) {
   if (!claimedAt) return "skipped";
 
   // Mientras se espera, ya se van consultando los tokens del usuario.
-  const tokensPromise = tokensFor(str(doc.fields.uid));
+  const uid = str(doc.fields.uid);
+  const tokensPromise = tokensFor(uid);
   tokensPromise.catch(() => {});
+  const prefsPromise = prefsFor(uid);
 
   await sleepUntil(c, dueAt - LEAD_MS - RECHECK_MS);
 
@@ -135,7 +160,7 @@ async function processTask(c, doc, tokensFor) {
     current = fresh; updateTime = fresh.updateTime;
   }
   const f = current.fields;
-  const info = { title: str(f.title) || "Pendiente", time: str(f.time) || "", remindMin: int(f.remindMin) || 0 };
+  const info = { title: str(f.title) || "Pendiente", time: str(f.time) || "", remindMin: int(f.remindMin) || 0, timeFormat: await prefsPromise };
   const deviceTokens = await tokensPromise;
 
   await sleepUntil(c, dueAt - LEAD_MS);
@@ -188,8 +213,15 @@ export async function processReminders(env, deps = {}) {
     return tokenCache.get(uid);
   };
 
+  // Una sola lectura de preferencias por usuario en cada ejecución.
+  const prefCache = new Map();
+  const prefsFor = (uid) => {
+    if (!prefCache.has(uid)) prefCache.set(uid, readTimeFormat(c, uid));
+    return prefCache.get(uid);
+  };
+
   // Todas a la vez: cada una espera su propia hora, así que no pueden ir por turnos.
-  const results = await Promise.allSettled(pending.map((doc) => processTask(c, doc, tokensFor)));
+  const results = await Promise.allSettled(pending.map((doc) => processTask(c, doc, tokensFor, prefsFor)));
   return results.map((r) => {
     if (r.status === "fulfilled") return r.value;
     c.log("Error procesando pendiente:", r.reason);

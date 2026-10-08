@@ -15,6 +15,8 @@ let fcmToken = null;       // token de este dispositivo (si los avisos están ac
 let lastFocus = null;      // elemento que abrió el modal, para devolverle el foco
 let editingId = null;      // id del pendiente que se está editando (null = formulario de alta)
 let mode = "month";        // vista activa: "month" (calendario) o "today"
+let timeFormat = loadTimeFormat();   // "24" | "12": solo cambia cómo se muestran y eligen las horas (se guardan siempre como HH:MM)
+let unsubPrefs = null;
 const pendingDeletes = new Set();   // ids ocultos que se borran de Firestore al vencer UNDO_MS
 let deleteTimer = null;
 const UNDO_MS = 6000;
@@ -23,6 +25,10 @@ const visibleTasks = () => tasks.filter((t) => !pendingDeletes.has(t.id));
 const pad = (n) => String(n).padStart(2, "0");
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fmtTime = (t) => Format.formatTime(t, timeFormat);
+function loadTimeFormat() {
+  try { return localStorage.getItem("timeFormat") === "12" ? "12" : "24"; } catch (_) { return "24"; }
+}
 const parseKey = (k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
 
 // action = { label, onClick, ms }: añade un botón (p. ej. "Deshacer") y alarga el tiempo en pantalla.
@@ -68,11 +74,14 @@ auth.onAuthStateChanged((u) => {
   $("app").hidden = !u;
   if (!u) {
     if (unsubTasks) { unsubTasks(); unsubTasks = null; }
+    if (unsubPrefs) { unsubPrefs(); unsubPrefs = null; }
     tasks = [];
     if (selectedDate) closeDay();
+    closeSettings();
     return;
   }
   setMode(loadMode());
+  subscribePrefs();
   subscribeTasks();
   setupNotifButton();
 });
@@ -173,7 +182,7 @@ function render() {
     list.slice(0, 3).forEach((t) => {
       const c = document.createElement("span");
       c.className = "chip" + (t.done ? " done" : "");
-      c.textContent = `${t.time} ${t.title}`;
+      c.textContent = `${fmtTime(t.time)} ${t.title}`;
       cell.appendChild(c);
     });
     if (list.length > 3) {
@@ -210,11 +219,12 @@ function closeDay() {
 $("close").onclick = closeDay;
 $("modal").onclick = (e) => { if (e.target === $("modal")) closeDay(); };
 document.addEventListener("keydown", (e) => {
-  if ($("modal").hidden) return;
-  if (e.key === "Escape") return closeDay();
+  const dialog = !$("settings").hidden ? $("settings") : !$("modal").hidden ? $("modal") : null;
+  if (!dialog) return;
+  if (e.key === "Escape") return dialog === $("settings") ? closeSettings() : closeDay();
   if (e.key !== "Tab") return;
-  // Atrapa el foco dentro del modal.
-  const items = [...$("modal").querySelectorAll("button, input, select"), ...$("toast").querySelectorAll("button")]
+  // Atrapa el foco dentro del diálogo abierto.
+  const items = [...dialog.querySelectorAll("button, input, select"), ...$("toast").querySelectorAll("button")]
     .filter((el) => !el.disabled && el.offsetParent !== null);
   if (!items.length) return;
   const first = items[0], last = items[items.length - 1];
@@ -241,7 +251,7 @@ function buildItem(t) {
   cb.type = "checkbox"; cb.checked = !!t.done; cb.setAttribute("aria-label", `Completado: ${t.title}`);
   cb.onchange = () => db.collection("tasks").doc(t.id).update({ done: cb.checked });
 
-  const time = document.createElement("span"); time.className = "time"; time.textContent = t.time;
+  const time = document.createElement("span"); time.className = "time"; time.textContent = fmtTime(t.time);
   const title = document.createElement("span"); title.className = "title"; title.textContent = t.title;
 
   const ed = document.createElement("button");
@@ -289,7 +299,7 @@ window.addEventListener("pagehide", flushDeletes);
 function startEdit(t) {
   editingId = t.id;
   $("f-title").value = t.title;
-  $("f-time").value = t.time;
+  setTimeValue(t.time);
   $("f-remind").value = String(t.remindMin);
   $("f-date").value = t.date;
   $("f-date-row").hidden = false;
@@ -302,6 +312,7 @@ function startEdit(t) {
 function cancelEdit() {
   editingId = null;
   $("form").reset();
+  setTimeValue("09:00");
   $("f-date-row").hidden = true;
   $("f-submit").textContent = "Agregar";
   $("f-cancel").hidden = true;
@@ -312,7 +323,7 @@ $("f-cancel").onclick = cancelEdit;
 $("form").onsubmit = async (e) => {
   e.preventDefault();
   const title = $("f-title").value.trim();
-  const time = $("f-time").value;
+  const time = getTimeValue();
   const remindMin = Number($("f-remind").value);
   const date = editingId ? $("f-date").value : selectedDate;
   if (!title || !time || !date) return;
@@ -332,7 +343,7 @@ $("form").onsubmit = async (e) => {
     });
     $("f-title").value = "";
     if (remindMin >= 0 && messaging && Notification.permission !== "granted") {
-      toast("Activa los avisos (botón 🔔) para recibir el recordatorio");
+      toast("Activa los avisos en Ajustes (⚙) para recibir el recordatorio");
     }
   } catch (err) {
     toast("No se pudo guardar: " + err.message);
@@ -354,12 +365,6 @@ async function saveEdit(data) {
 }
 
 /* ---------- Notificaciones push ---------- */
-function updateNotifButtons() {
-  if (!messaging || !("Notification" in window)) return;
-  $("btn-notif").hidden = !!fcmToken || Notification.permission === "denied";
-  $("btn-notif-off").hidden = !fcmToken;
-}
-
 // iOS solo permite push en la app instalada en la pantalla de inicio (iOS 16.4+): en Safari normal no hay Notification.
 const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const isStandalone = navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
@@ -378,25 +383,8 @@ async function setupNotifButton() {
   setupIosHint();
   if (!messaging || !("Notification" in window)) return;
   if (Notification.permission === "granted") await registerToken();   // renueva/guarda el token de este dispositivo
-  updateNotifButtons();
+  renderNotifSettings();
 }
-
-$("btn-notif").onclick = async () => {
-  const perm = await Notification.requestPermission();
-  if (perm === "granted") {
-    await registerToken();
-    updateNotifButtons();
-    if (fcmToken) toast("Avisos activados en este dispositivo");
-  } else {
-    toast("Permiso de notificaciones denegado");
-  }
-};
-
-$("btn-notif-off").onclick = async () => {
-  await disablePush();
-  updateNotifButtons();
-  toast("Avisos desactivados en este dispositivo");
-};
 
 async function registerToken() {
   try {
@@ -434,6 +422,152 @@ async function disablePush() {
   catch (e) { console.warn("No se pudo invalidar el token en FCM:", e); }
   fcmToken = null;
 }
+
+/* ---------- Selector de hora (24 h o 12 h con a. m./p. m.) ---------- */
+function buildTimeOptions(keep = getTimeValue()) {
+  const is12 = timeFormat === "12";
+  const hour = $("f-hour"), min = $("f-min");
+  hour.innerHTML = "";
+  const hours = is12 ? Array.from({ length: 12 }, (_, i) => i + 1) : Array.from({ length: 24 }, (_, i) => i);
+  for (const h of hours) hour.add(new Option(is12 ? String(h) : Format.pad2(h), String(h)));
+  if (!min.options.length) for (let m = 0; m < 60; m++) min.add(new Option(Format.pad2(m), String(m)));
+  $("f-ampm").hidden = !is12;
+  setTimeValue(keep);
+}
+
+function getTimeValue() {
+  const h = Number($("f-hour").value), m = Number($("f-min").value);
+  const hh = timeFormat === "12" ? Format.to24(h, $("f-ampm").value) : h;
+  return `${Format.pad2(hh)}:${Format.pad2(m)}`;
+}
+
+function setTimeValue(hhmm) {
+  const [hh, mm] = (hhmm || "09:00").split(":").map(Number);
+  if (timeFormat === "12") {
+    const { hour12, ampm } = Format.from24(hh);
+    $("f-hour").value = String(hour12);
+    $("f-ampm").value = ampm;
+  } else {
+    $("f-hour").value = String(hh);
+  }
+  $("f-min").value = String(mm);
+}
+
+function setTimeFormat(v, persist) {
+  const keep = getTimeValue();           // la hora elegida se lee con el formato anterior, antes de cambiarlo
+  timeFormat = v === "12" ? "12" : "24";
+  try { localStorage.setItem("timeFormat", timeFormat); } catch (_) {}
+  buildTimeOptions(keep);
+  refresh();
+  if (persist && user) {
+    db.collection("users").doc(user.uid).set({ timeFormat }, { merge: true })
+      .catch((e) => toast("No se pudo guardar el formato de hora: " + e.message));
+  }
+}
+
+// El formato de hora es por cuenta (el Worker lo usa para el texto del aviso); el tema es por dispositivo.
+function subscribePrefs() {
+  if (unsubPrefs) unsubPrefs();
+  unsubPrefs = db.collection("users").doc(user.uid).onSnapshot(
+    (snap) => {
+      const next = snap.exists && snap.data().timeFormat === "12" ? "12" : "24";
+      if (next !== timeFormat) { setTimeFormat(next, false); if (!$("settings").hidden) renderSettings(); }
+    },
+    (e) => console.warn("No se pudieron leer las preferencias:", e)
+  );
+}
+
+/* ---------- Ajustes ---------- */
+let settingsFocus = null;
+
+function openSettings() {
+  settingsFocus = document.activeElement;
+  renderSettings();
+  $("settings").hidden = false;
+  $("settings-close").focus();
+}
+function closeSettings() {
+  $("settings").hidden = true;
+  if (settingsFocus && document.contains(settingsFocus)) settingsFocus.focus();
+  settingsFocus = null;
+}
+$("btn-settings").onclick = openSettings;
+$("settings-close").onclick = closeSettings;
+$("settings").onclick = (e) => { if (e.target === $("settings")) closeSettings(); };
+
+function renderSettings() {
+  const t = Theme.load();
+  document.querySelector(`input[name="theme-mode"][value="${t.mode}"]`).checked = true;
+  $("c-accent").value = t.accent;
+  $("c-bg").value = t.bg;
+  $("theme-custom").hidden = t.mode !== "custom";
+  $("theme-hint").textContent = t.mode === "custom" ? Theme.describe(t) : "";
+  document.querySelector(`input[name="time-format"][value="${timeFormat}"]`).checked = true;
+  $("account-email").textContent = user && user.email ? user.email : "";
+  renderNotifSettings();
+}
+
+function applyTheme(patch) {
+  const t = { ...Theme.load(), ...patch };
+  Theme.save(t);
+  Theme.apply(t);
+  return t;
+}
+document.querySelectorAll('input[name="theme-mode"]').forEach((r) => {
+  r.onchange = () => { applyTheme({ mode: r.value }); renderSettings(); };
+});
+// Los selectores de color se actualizan en vivo; solo se refresca el aviso para no interrumpir el selector nativo.
+$("c-accent").oninput = (e) => { $("theme-hint").textContent = Theme.describe(applyTheme({ accent: e.target.value })); };
+$("c-bg").oninput = (e) => { $("theme-hint").textContent = Theme.describe(applyTheme({ bg: e.target.value })); };
+$("theme-reset").onclick = () => { applyTheme({ accent: Theme.DEFAULTS.accent, bg: Theme.DEFAULTS.bg }); renderSettings(); };
+
+document.querySelectorAll('input[name="time-format"]').forEach((r) => {
+  r.onchange = () => setTimeFormat(r.value, true);
+});
+
+function renderNotifSettings() {
+  const status = $("notif-status"), btn = $("btn-notif-toggle");
+  btn.hidden = false;
+  if (!messaging || !("Notification" in window)) {
+    status.textContent = isIOS && !isStandalone
+      ? "En iPhone/iPad los avisos requieren instalar la app: toca Compartir → Agregar a pantalla de inicio y ábrela desde ese ícono."
+      : "Este navegador no admite avisos.";
+    btn.hidden = true;
+  } else if (Notification.permission === "denied") {
+    status.textContent = "Bloqueaste los avisos para este sitio. Actívalos desde los ajustes del navegador y vuelve aquí.";
+    btn.hidden = true;
+  } else if (fcmToken) {
+    status.textContent = "Avisos activados en este dispositivo.";
+    btn.textContent = "Desactivar avisos"; btn.dataset.action = "off";
+  } else {
+    status.textContent = "Los avisos están desactivados en este dispositivo.";
+    btn.textContent = "Activar avisos"; btn.dataset.action = "on";
+  }
+}
+
+$("btn-notif-toggle").onclick = async () => {
+  const btn = $("btn-notif-toggle");
+  btn.disabled = true;
+  try {
+    if (btn.dataset.action === "off") {
+      await disablePush();
+      toast("Avisos desactivados en este dispositivo");
+    } else {
+      const perm = await Notification.requestPermission();
+      if (perm === "granted") {
+        await registerToken();
+        if (fcmToken) toast("Avisos activados en este dispositivo");
+      } else {
+        toast("Permiso de notificaciones denegado");
+      }
+    }
+  } finally {
+    btn.disabled = false;
+    renderNotifSettings();
+  }
+};
+
+buildTimeOptions("09:00");
 
 // App abierta: FCM no muestra nada solo, así que lo mostramos nosotros.
 if (messaging) {

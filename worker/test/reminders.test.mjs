@@ -2,7 +2,10 @@
 // Ejecutar con: npm run test:worker
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { processReminders, CONFIG } from "../src/reminders.mjs";
+import { createRequire } from "node:module";
+import { processReminders, formatTime, CONFIG } from "../src/reminders.mjs";
+
+const clientFormat = createRequire(import.meta.url)("../../public/format.js");
 
 const PID = "demo";
 const ENV = { SERVICE_ACCOUNT: JSON.stringify({ project_id: PID, client_email: "w@demo.iam", private_key: "no-se-usa" }) };
@@ -14,7 +17,8 @@ function makeWorld(start = T0) {
   let t = start;
   const timers = [];
   let version = 1;
-  const tasks = new Map(), tokens = new Map();
+  const tasks = new Map(), tokens = new Map(), users = new Map();
+  let userReads = 0, failUserReads = false;
   const sends = [], logs = [], deletedTokens = [];
   const fcmReply = new Map();   // token -> { status, body }
 
@@ -47,9 +51,14 @@ function makeWorld(start = T0) {
       const r = fcmReply.get(m.token) || { status: 200, body: "{}" };
       return new Response(r.body ?? "{}", { status: r.status });
     }
-    const m = u.pathname.match(/\/documents\/(tasks|tokens)\/(.+)$/);
+    const m = u.pathname.match(/\/documents\/(tasks|tokens|users)\/(.+)$/);
     if (!m) throw new Error("URL inesperada: " + url);
-    const coll = m[1], id = decodeURIComponent(m[2]), store = coll === "tasks" ? tasks : tokens;
+    const coll = m[1], id = decodeURIComponent(m[2]), store = coll === "tasks" ? tasks : coll === "tokens" ? tokens : users;
+    if (coll === "users") {
+      userReads++;
+      if (failUserReads === "throw") throw new Error("red caída");
+      if (failUserReads) return json(500, { error: { status: "INTERNAL" } });
+    }
     if (method === "DELETE") { store.delete(id); deletedTokens.push(id); return json(200, {}); }
     const d = store.get(id);
     if (method === "GET") return d ? json(200, asDoc(coll, id, d)) : json(404, { error: { status: "NOT_FOUND" } });
@@ -67,6 +76,9 @@ function makeWorld(start = T0) {
   const schedule = (at, fn) => timers.push({ at, fn });
   const world = {
     sends, logs, deletedTokens, fcmReply, tasks,
+    get userReads() { return userReads; },
+    failUserReads: (v = true) => { failUserReads = v; },
+    addUser(uid, timeFormat) { users.set(uid, { updateTime: stamp(), fields: { timeFormat: val(timeFormat) } }); },
     now: () => t,
     setNow: (v) => { t = v; },
     at: (ms, fn) => schedule(t + ms, fn),                   // ejecuta algo (p. ej. "el usuario borra la tarea") en un instante
@@ -278,4 +290,77 @@ test("solo avisa a los dispositivos del dueño", async () => {
   w.addTask("a", { due: T0 + 5_000, uid: "u1" }); w.addToken("mio", "u1"); w.addToken("ajeno", "u2");
   await go(w);
   assert.deepEqual(w.sends.map((s) => s.token), ["mio"]);
+});
+
+/* ---------- Formato de hora de la cuenta ---------- */
+test("sin preferencia guardada, el texto del aviso usa 24 h", async () => {
+  const w = makeWorld();
+  w.addTask("a", { due: T0 + 5_000, time: "21:30" }); w.addToken("tokA");
+  await go(w);
+  assert.equal(w.sends[0].body, "Ahora · 21:30");
+});
+
+test("con formato de 12 h, el texto del aviso usa a. m./p. m. (a la hora y con anticipación)", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "12");
+  w.addTask("a", { due: T0 + 5_000, time: "21:30", remindMin: 0 });
+  w.addTask("b", { due: T0 + 6_000, time: "09:05", remindMin: 15 });
+  w.addToken("tokA");
+  await go(w);
+  assert.deepEqual(w.sends.map((x) => x.body).sort(), ["Ahora · 9:30 p. m.", "Es a las 9:05 a. m."]);
+});
+
+test("con formato de 24 h guardado, el texto sigue en 24 h", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "24");
+  w.addTask("a", { due: T0 + 5_000, time: "21:30", remindMin: 5 }); w.addToken("tokA");
+  await go(w);
+  assert.equal(w.sends[0].body, "Es a las 21:30");
+});
+
+test("el formato se aplica según el dueño de cada pendiente", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "12");
+  w.addTask("a", { due: T0 + 5_000, uid: "u1", time: "18:00" }); w.addToken("t1", "u1");
+  w.addTask("b", { due: T0 + 6_000, uid: "u2", time: "18:00" }); w.addToken("t2", "u2");
+  await go(w);
+  const byToken = Object.fromEntries(w.sends.map((x) => [x.token, x.body]));
+  assert.equal(byToken.t1, "Ahora · 6:00 p. m.");
+  assert.equal(byToken.t2, "Ahora · 18:00");
+});
+
+test("si falla la lectura de preferencias, el aviso se envía igual en 24 h", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "12"); w.failUserReads();
+  w.addTask("a", { due: T0 + 5_000, time: "21:30" }); w.addToken("tokA");
+  assert.deepEqual(await go(w), ["sent"]);
+  assert.equal(w.sends[0].body, "Ahora · 21:30");
+  assert.ok(w.logs.some((l) => l.includes("preferencias")));
+});
+
+test("si la lectura de preferencias lanza un error de red, el aviso se envía igual en 24 h", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "12"); w.failUserReads("throw");
+  w.addTask("a", { due: T0 + 5_000, time: "21:30" }); w.addToken("tokA");
+  assert.deepEqual(await go(w), ["sent"]);
+  assert.equal(w.sends[0].body, "Ahora · 21:30");
+});
+
+test("se lee una sola vez la preferencia de cada usuario por ejecución", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "12");
+  w.addTask("a", { due: T0 + 5_000 }); w.addTask("b", { due: T0 + 7_000 }); w.addTask("c", { due: T0 + 9_000 });
+  w.addToken("tokA");
+  await go(w);
+  assert.equal(w.userReads, 1);
+});
+
+test("formatTime del Worker da lo mismo que el del cliente en los 1440 minutos del día, en ambos formatos", () => {
+  for (const fmt of ["12", "24"]) for (let h = 0; h < 24; h++) for (let m = 0; m < 60; m++) {
+    const hhmm = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    assert.equal(formatTime(hhmm, fmt), clientFormat.formatTime(hhmm, fmt), `${hhmm} (${fmt} h)`);
+  }
+  for (const bad of ["", "9:30", "abc", null, undefined]) {
+    assert.equal(formatTime(bad, "12"), clientFormat.formatTime(bad, "12"));
+  }
 });
