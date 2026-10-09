@@ -5,7 +5,7 @@
   "description": "Agenda web con calendario, pendientes y recordatorios push (Firebase + Cloudflare Worker).",
   "license": "MIT",
   "scripts": {
-    "check": "node --check public/app.js && node --check public/firebase-messaging-sw.js && node --check public/theme.js && node --check public/format.js && node --check public/nl.js && node --check public/sw-actions.js && node --check public/edit-plan.js && node --check worker/src/index.js && node --check worker/src/reminders.mjs && node --check worker/src/google-auth.mjs && node scripts/check-json.js",
+    "check": "node --check public/app.js && node --check public/firebase-messaging-sw.js && node --check public/theme.js && node --check public/format.js && node --check public/nl.js && node --check public/sw-actions.js && node --check public/edit-plan.js && node --check public/digest.js && node --check worker/src/digests.mjs && node --check worker/src/index.js && node --check worker/src/reminders.mjs && node --check worker/src/google-auth.mjs && node scripts/check-json.js",
     "deploy:firestore": "firebase deploy --only firestore",
     "deploy:hosting": "firebase deploy --only hosting",
     "deploy:worker": "npm --prefix worker run deploy",

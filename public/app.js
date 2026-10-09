@@ -19,6 +19,10 @@ let timeFormat = loadTimeFormat();   // "24" | "12": solo cambia cómo se muestr
 let nagMax = 5;            // máximo de repeticiones al insistir (por cuenta: users/{uid}.nagMax)
 let snoozeMin = 10;        // minutos que pospone el botón de la notificación (por cuenta: users/{uid}.snoozeMin)
 let unsubPrefs = null;
+// Resúmenes diarios (por cuenta: users/{uid}). `next` = próximo instante programado (lo avanza el Worker).
+let digest = { morning: null, evening: null, tz: null, next: null };
+let tzChecked = false;     // la zona horaria del dispositivo se sincroniza una vez por sesión, no en cada cambio (evita ir y venir entre dispositivos)
+const deviceTz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (_) { return "UTC"; } })();
 const pendingDeletes = new Set();   // ids ocultos que se borran de Firestore al vencer UNDO_MS
 let deleteTimer = null;
 const UNDO_MS = 6000;
@@ -126,6 +130,11 @@ function refresh() {
 }
 
 function loadMode() {
+  // Tocar un resumen abre la app en "Hoy" (/?view=today); se limpia la dirección para que un recargado no lo repita.
+  if (new URLSearchParams(location.search).get("view") === "today") {
+    try { history.replaceState(null, "", location.pathname); } catch (_) { /* nada */ }
+    return "today";
+  }
   try { return localStorage.getItem("mode") === "today" ? "today" : "month"; } catch (_) { return "month"; }
 }
 
@@ -574,6 +583,7 @@ function setTimeFormat(v, persist) {
 // El formato de hora es por cuenta (el Worker lo usa para el texto del aviso); el tema es por dispositivo.
 function subscribePrefs() {
   if (unsubPrefs) unsubPrefs();
+  tzChecked = false;
   unsubPrefs = db.collection("users").doc(user.uid).onSnapshot(
     (snap) => {
       const d = snap.exists ? snap.data() : {};
@@ -582,6 +592,17 @@ function subscribePrefs() {
       const snooze = [5, 10, 15, 30, 60].includes(d.snoozeMin) ? d.snoozeMin : 10;
       let changed = false;
       if (snooze !== snoozeMin) { snoozeMin = snooze; changed = true; }
+      const dm = Digest.HHMM.test(d.digestMorning || "") ? d.digestMorning : null;
+      const de = Digest.HHMM.test(d.digestEvening || "") ? d.digestEvening : null;
+      const dn = Number.isFinite(d.nextDigestAt) ? d.nextDigestAt : null;
+      if (dm !== digest.morning || de !== digest.evening || (d.tz || null) !== digest.tz || dn !== digest.next) {
+        digest = { morning: dm, evening: de, tz: d.tz || null, next: dn };
+        changed = true;
+      }
+      if (!tzChecked) {                // una vez por sesión: si cambió de zona horaria o falta la próxima hora, se corrige
+        tzChecked = true;
+        if ((dm || de) && (d.tz !== deviceTz || dn === null)) saveDigest(dm, de);
+      }
       if (next !== timeFormat) { setTimeFormat(next, false); changed = true; }
       if (max !== nagMax) { nagMax = max; syncNagField(); changed = true; }
       if (changed && !$("settings").hidden) renderSettings();
@@ -618,6 +639,7 @@ function renderSettings() {
   document.querySelector(`input[name="time-format"][value="${timeFormat}"]`).checked = true;
   $("set-nagmax").value = String(nagMax);
   $("set-snooze").value = String(snoozeMin);
+  renderDigestSettings();
   $("account-email").textContent = user && user.email ? user.email : "";
   renderNotifSettings();
 }
@@ -656,6 +678,46 @@ $("set-snooze").onchange = (e) => {
       .catch((err) => toast("No se pudo guardar la duración de Posponer: " + err.message));
   }
 };
+
+/* ---------- Resúmenes diarios ---------- */
+const DIGEST_DEFAULTS = { morning: "08:00", evening: "21:00" };
+const DIGEST_OPTIONS = { morning: Digest.MORNING_OPTIONS, evening: Digest.EVENING_OPTIONS };
+
+function renderDigestSettings() {
+  for (const kind of ["morning", "evening"]) {
+    const sel = $(`digest-${kind}-time`), on = digest[kind];
+    sel.innerHTML = "";
+    for (const o of DIGEST_OPTIONS[kind]) sel.add(new Option(fmtTime(o), o));
+    sel.value = on && DIGEST_OPTIONS[kind].includes(on) ? on : DIGEST_DEFAULTS[kind];
+    $(`digest-${kind}-on`).checked = !!on;
+    sel.disabled = !on;
+  }
+  const hint = $("digest-hint");
+  if (!(digest.morning || digest.evening) || !digest.next) { hint.textContent = ""; return; }
+  const when = new Date(digest.next).toLocaleString("es-MX", { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hour12: timeFormat === "12" });
+  hint.textContent = `Próximo resumen: ${when} (zona horaria ${digest.tz || deviceTz}).`;
+}
+
+// Guarda los resúmenes con la zona horaria de este dispositivo y la próxima hora en que toca uno (el Worker la avanza después).
+function saveDigest(morning, evening) {
+  const next = Digest.nextDigestAt({ tz: deviceTz, morning, evening }, Date.now());
+  digest = { morning, evening, tz: deviceTz, next };
+  if (!settingsHidden()) renderDigestSettings();
+  return db.collection("users").doc(user.uid)
+    .set({ tz: deviceTz, digestMorning: morning, digestEvening: evening, nextDigestAt: next }, { merge: true })
+    .catch((e) => toast("No se pudo guardar el resumen: " + e.message));
+}
+const settingsHidden = () => $("settings").hidden;
+
+for (const kind of ["morning", "evening"]) {
+  const other = kind === "morning" ? "evening" : "morning";
+  const apply = () => {
+    const on = $(`digest-${kind}-on`).checked, value = on ? $(`digest-${kind}-time`).value : null;
+    saveDigest(...(kind === "morning" ? [value, digest[other]] : [digest[other], value]));
+  };
+  $(`digest-${kind}-on`).onchange = apply;
+  $(`digest-${kind}-time`).onchange = apply;
+}
 
 function renderNotifSettings() {
   const status = $("notif-status"), btn = $("btn-notif-toggle");

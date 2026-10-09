@@ -6,6 +6,10 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function validDigestTime(t) {
+      return t == null || (t is string && t.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$'));
+    }
+
     // Esquema de un pendiente. `notified` solo lo cambia el Worker (cuenta de servicio, que ignora las reglas).
     function validTask(d) {
       return d.keys().hasOnly(['uid', 'title', 'date', 'time', 'remindMin', 'remindAt', 'notified', 'done', 'createdAt', 'nagMin', 'nagAt', 'nagCount'])
@@ -58,11 +62,16 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
       allow create, update: if signedIn() && request.auth.uid == uid
-                            && request.resource.data.keys().hasOnly(['timeFormat', 'nagMax', 'snoozeMin'])
+                            && request.resource.data.keys().hasOnly(['timeFormat', 'nagMax', 'snoozeMin', 'tz', 'digestMorning', 'digestEvening', 'nextDigestAt'])
                             && request.resource.data.size() >= 1
                             && request.resource.data.get('timeFormat', '24') in ['12', '24']
                             && request.resource.data.get('nagMax', 5) in [3, 5, 10, 20]
-                            && request.resource.data.get('snoozeMin', 10) in [5, 10, 15, 30, 60];
+                            && request.resource.data.get('snoozeMin', 10) in [5, 10, 15, 30, 60]
+                            // Resúmenes: zona horaria, hora de cada resumen ("HH:MM" o null = apagado) y el próximo instante programado.
+                            && request.resource.data.get('tz', 'UTC') is string && request.resource.data.get('tz', 'UTC').size() <= 64
+                            && validDigestTime(request.resource.data.get('digestMorning', null))
+                            && validDigestTime(request.resource.data.get('digestEvening', null))
+                            && (request.resource.data.get('nextDigestAt', null) == null || request.resource.data.get('nextDigestAt', null) is int);
     }
 
     // Tokens de notificación: solo se escriben/borran los propios (el Worker los lee con cuenta de servicio).

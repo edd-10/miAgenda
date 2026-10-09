@@ -23,6 +23,8 @@ function makeFetch(routes = {}) {
     const method = init.method || "GET";
     calls.push({ url, method, headers: init.headers || {}, body: init.body });
     if (url.startsWith("https://securetoken.googleapis.com/")) return (routes.token || (() => resp(200, { id_token: "FRESH" })))(url, init);
+    if (url.endsWith(":runQuery")) return (routes.query || (() => resp(200, [{}])))(url, init);
+    if (url.endsWith(":commit")) return (routes.commit || (() => resp(200, {})))(url, init);
     return (routes[method] || (() => resp(200, {})))(url, init);
   };
   fn.calls = calls;
@@ -219,7 +221,7 @@ test("readAuthRecordFromIndexedDB: si la base no existía NO la crea (aborta) y 
 });
 
 /* ---------- El service worker real, cargado en un contexto simulado ---------- */
-function loadServiceWorker({ fetchImpl, signedIn = true } = {}) {
+function loadServiceWorker({ fetchImpl, signedIn = true, windows = [] } = {}) {
   const listeners = {}, shown = [], pending = [], opened = [], skipped = { n: 0 }, claimed = { n: 0 };
   let background;
   const fetchFn = fetchImpl || makeFetch({ GET: () => resp(200, { fields: {} }) });
@@ -228,7 +230,7 @@ function loadServiceWorker({ fetchImpl, signedIn = true } = {}) {
     URLSearchParams, JSON, Date, Promise, setTimeout, encodeURIComponent, Error,
     firebase: { initializeApp() {}, messaging: () => ({ onBackgroundMessage: (cb) => { background = cb; } }) },
     registration: { showNotification: async (title, opts) => { shown.push({ title, opts }); } },
-    clients: { matchAll: async () => [], openWindow: async (u) => { opened.push(u); }, claim: async () => { claimed.n++; } },
+    clients: { matchAll: async () => windows, openWindow: async (u) => { opened.push(u); }, claim: async () => { claimed.n++; } },
     skipWaiting: () => { skipped.n++; },
     fetch: fetchFn,
     indexedDB: fakeIdb({ value: record(-5000, Date.now()), empty: !signedIn }),   // el SW usa el reloj real: el token guardado ya venció
@@ -316,4 +318,147 @@ test("service worker: una versión nueva se instala y toma el control de inmedia
   sw.listeners.activate({ waitUntil: (p) => sw.pending.push(p) });
   await Promise.all(sw.pending.splice(0));
   assert.equal(sw.claimed.n, 1);
+});
+
+/* ---------- Resúmenes: notificación y "Mover a mañana" ---------- */
+const NAME = (id) => `projects/${PID}/databases/(default)/documents/tasks/${id}`;
+const taskDoc = (id, { time = "09:00", remindMin = 0 } = {}) => ({ document: { name: NAME(id), fields: { time: { stringValue: time }, remindMin: { integerValue: String(remindMin) }, done: { booleanValue: false } } } });
+const withUid = (uid = "u1") => async () => ({ uid, stsTokenManager: { refreshToken: "REFRESH", accessToken: "CACHED", expirationTime: NOW + 3_600_000 } });
+const localMs = (y, m, d, hh, mm) => new Date(y, m - 1, d, hh, mm).getTime();
+
+test("notificationOptions: el resumen de la mañana no lleva botones; el cierre del día lleva 'Mover a mañana'", () => {
+  const am = SW.notificationOptions({ kind: "digest-morning", title: "☀️ Hoy tienes 3 pendientes", body: "…", date: "2026-10-09" });
+  assert.equal(am.tag, "digest-morning");
+  assert.equal(am.actions, undefined);
+  assert.equal(am.renotify, true);
+  assert.deepEqual(am.data, { kind: "digest-morning", date: "2026-10-09", title: "☀️ Hoy tienes 3 pendientes" });
+
+  const pm = SW.notificationOptions({ kind: "digest-evening", title: "🌙 Cierre del día", body: "…", date: "2026-10-09" });
+  assert.equal(pm.tag, "digest-evening");
+  assert.deepEqual(pm.actions, [{ action: "move", title: "Mover a mañana" }]);
+  assert.equal(pm.data.date, "2026-10-09");
+});
+
+test("notificationOptions: sin una fecha válida el cierre del día no ofrece mover (no se puede saber qué mover)", () => {
+  for (const date of [undefined, "", "mañana", "2026-10-9"]) assert.equal(SW.notificationOptions({ kind: "digest-evening", title: "x", date }).actions, undefined, String(date));
+});
+
+test("Mover a mañana: consulta los pendientes sin hacer de ese día del usuario y los pasa al día siguiente en una sola escritura", async () => {
+  const f = makeFetch({
+    query: () => resp(200, [taskDoc("a", { time: "09:00", remindMin: 15 }), taskDoc("b", { time: "18:30", remindMin: 0 }), { readTime: "x" }]),
+  });
+  assert.equal(await SW.run("move", { date: "2026-10-09" }, deps({ fetch: f, readAuthRecord: withUid("u1") })), "moved:2");
+  assert.deepEqual(f.calls.map((c) => c.method), ["POST", "POST"]);                       // consulta + commit
+  const q = JSON.parse(f.calls[0].body).structuredQuery;
+  const filters = q.where.compositeFilter.filters.map((x) => [x.fieldFilter.field.fieldPath, Object.values(x.fieldFilter.value)[0]]);
+  assert.deepEqual(filters, [["uid", "u1"], ["date", "2026-10-09"], ["done", false]]);
+  assert.equal(f.calls[0].headers.authorization, "Bearer CACHED");
+
+  assert.match(f.calls[1].url, /documents:commit$/);
+  const { writes } = JSON.parse(f.calls[1].body);
+  assert.equal(writes.length, 2);
+  const [a, b] = writes;
+  assert.equal(a.update.name, NAME("a"));
+  assert.deepEqual(a.currentDocument, { exists: true });                                    // no recrea nada borrado
+  assert.equal(a.update.fields.date.stringValue, "2026-10-10");
+  assert.equal(a.update.fields.remindAt.integerValue, String(localMs(2026, 10, 10, 9, 0) - 15 * 60_000));   // misma hora, menos la anticipación
+  assert.equal(b.update.fields.remindAt.integerValue, String(localMs(2026, 10, 10, 18, 30)));
+  for (const w of writes) {
+    assert.equal(w.update.fields.notified.booleanValue, false);
+    assert.deepEqual(w.update.fields.nagAt, { nullValue: null });
+    assert.equal(w.update.fields.nagCount.integerValue, "0");
+    assert.deepEqual(w.updateMask.fieldPaths.sort(), ["date", "nagAt", "nagCount", "notified", "remindAt"]);
+  }
+});
+
+test("Mover a mañana: un pendiente sin aviso (remindMin -1) solo cambia de fecha", async () => {
+  const f = makeFetch({ query: () => resp(200, [taskDoc("a", { time: "09:00", remindMin: -1 })]) });
+  await SW.run("move", { date: "2026-10-09" }, deps({ fetch: f, readAuthRecord: withUid() }));
+  const w = JSON.parse(f.calls[1].body).writes[0];
+  assert.deepEqual(w.update.fields, { date: { stringValue: "2026-10-10" }, remindAt: { nullValue: null } });
+  assert.deepEqual(w.updateMask.fieldPaths.sort(), ["date", "remindAt"]);
+});
+
+test("Mover a mañana: pasa bien de fin de mes, de fin de año y por febrero bisiesto", async () => {
+  for (const [from, to] of [["2026-10-31", "2026-11-01"], ["2026-12-31", "2027-01-01"], ["2028-02-28", "2028-02-29"], ["2028-02-29", "2028-03-01"], ["2027-02-28", "2027-03-01"], ["2026-04-30", "2026-05-01"]]) {
+    const f = makeFetch({ query: () => resp(200, [taskDoc("a", { time: "23:30", remindMin: 0 })]) });
+    await SW.run("move", { date: from }, deps({ fetch: f, readAuthRecord: withUid() }));
+    const w = JSON.parse(f.calls[1].body).writes[0];
+    assert.equal(w.update.fields.date.stringValue, to, `${from} → ${to}`);
+    const [y, m, d] = to.split("-").map(Number);
+    assert.equal(w.update.fields.remindAt.integerValue, String(localMs(y, m, d, 23, 30)), `remindAt de ${to}`);
+  }
+});
+
+test("Mover a mañana: sin pendientes no escribe nada", async () => {
+  const f = makeFetch({ query: () => resp(200, [{ readTime: "x" }]) });
+  assert.equal(await SW.run("move", { date: "2026-10-09" }, deps({ fetch: f, readAuthRecord: withUid() })), "moved:0");
+  assert.deepEqual(f.calls.map((c) => c.method), ["POST"]);                                  // solo la consulta
+});
+
+test("Mover a mañana: errores de consulta o de escritura lanzan; sin sesión o sin fecha también", async () => {
+  await assert.rejects(SW.run("move", { date: "2026-10-09" }, deps({ readAuthRecord: withUid(), fetch: makeFetch({ query: () => resp(403, {}) }) })), /query-403/);
+  await assert.rejects(SW.run("move", { date: "2026-10-09" }, deps({ readAuthRecord: withUid(), fetch: makeFetch({ query: () => resp(200, [taskDoc("a")]), commit: () => resp(500, {}) }) })), /commit-500/);
+  await assert.rejects(SW.run("move", { date: "2026-10-09" }, deps({ readAuthRecord: async () => null })), /sin-sesion/);
+  await assert.rejects(SW.run("move", { date: "2026-10-09" }, deps({ readAuthRecord: async () => ({ stsTokenManager: { refreshToken: "R", accessToken: "A", expirationTime: NOW + 3_600_000 } }) })), /sin-sesion/);   // sin uid
+  for (const date of [undefined, "", "mañana", "2026-10-9", "10/09/2026"]) await assert.rejects(SW.run("move", { date }, deps({ readAuthRecord: withUid() })), /fecha-invalida/, String(date));
+  await assert.rejects(SW.run("move", null, deps()), /fecha-invalida/);
+});
+
+/* ---------- El service worker real con los resúmenes ---------- */
+test("service worker: el cierre del día se muestra con el botón y el resumen de la mañana sin botones", async () => {
+  const sw = loadServiceWorker();
+  await sw.background({ data: { kind: "digest-evening", title: "🌙 Cierre del día", body: "Te quedaron 2 sin hacer: A, B", date: "2026-10-09", count: "2" } });
+  await sw.background({ data: { kind: "digest-morning", title: "☀️ Hoy tienes 3 pendientes", body: "…", date: "2026-10-09", count: "3" } });
+  assert.deepEqual(plain(sw.shown[0].opts.actions), [{ action: "move", title: "Mover a mañana" }]);
+  assert.equal(sw.shown[1].opts.actions, undefined);
+});
+
+test("service worker: 'Mover a mañana' escribe y confirma con una notificación", async () => {
+  const fetchImpl = makeFetch({ query: () => resp(200, [taskDoc("a"), taskDoc("b"), taskDoc("c")]) });
+  const sw = loadServiceWorker({ fetchImpl });
+  await sw.click("move", { kind: "digest-evening", date: "2026-10-09", title: "🌙 Cierre del día" });
+  assert.deepEqual(sw.fetch.calls.map((c) => c.method), ["POST", "POST", "POST"]);          // renovar token + consulta + commit
+  assert.equal(sw.shown.length, 1);
+  assert.equal(sw.shown[0].title, "Movidos a mañana");
+  assert.match(sw.shown[0].opts.body, /3 pendientes pasaron a mañana/);
+  assert.equal(sw.shown[0].opts.tag, "digest-evening");
+});
+
+test("service worker: 'Mover a mañana' con un solo pendiente y sin ninguno", async () => {
+  const one = loadServiceWorker({ fetchImpl: makeFetch({ query: () => resp(200, [taskDoc("a")]) }) });
+  await one.click("move", { kind: "digest-evening", date: "2026-10-09" });
+  assert.match(one.shown[0].opts.body, /1 pendiente pasó a mañana/);
+  const none = loadServiceWorker({ fetchImpl: makeFetch({ query: () => resp(200, [{}]) }) });
+  await none.click("move", { kind: "digest-evening", date: "2026-10-09" });
+  assert.equal(none.shown[0].title, "No había pendientes que mover");
+});
+
+test("service worker: si 'Mover a mañana' falla se avisa para hacerlo desde la app", async () => {
+  const sw = loadServiceWorker({ fetchImpl: makeFetch({ query: () => resp(200, [taskDoc("a")]), commit: () => resp(403, {}) }) });
+  await sw.click("move", { kind: "digest-evening", date: "2026-10-09" });
+  assert.equal(sw.shown.length, 1);
+  assert.equal(sw.shown[0].title, "No se pudo completar la acción");
+  assert.match(sw.shown[0].opts.body, /mueve los pendientes desde la app/);
+});
+
+test("service worker: tocar un resumen abre la vista Hoy (y si ya hay una ventana, la lleva allí)", async () => {
+  const sw = loadServiceWorker();
+  await sw.click("", { kind: "digest-morning", date: "2026-10-09" });
+  assert.deepEqual(plain(sw.opened), ["/?view=today"]);
+  assert.equal(sw.fetch.calls.length, 0);
+
+  const withWindow = loadServiceWorker({ windows: [{ focus: async () => {}, navigate: async function (u) { navigated.push(u); return this; } }] });
+  const navigated = [];
+  await withWindow.click("", { kind: "digest-evening", date: "2026-10-09" });
+  assert.deepEqual(navigated, ["/?view=today"]);
+  assert.deepEqual(plain(withWindow.opened), []);
+});
+
+test("service worker: tocar un aviso normal con una ventana abierta solo la enfoca (no recarga lo que estás haciendo)", async () => {
+  let focused = 0, navigated = 0;
+  const sw = loadServiceWorker({ windows: [{ focus: async () => { focused++; }, navigate: async () => { navigated++; } }] });
+  await sw.click("", { taskId: "t1", title: "⏰ X" });
+  assert.equal(focused, 1);
+  assert.equal(navigated, 0);
 });

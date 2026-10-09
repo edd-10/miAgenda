@@ -185,6 +185,16 @@
         <p class="muted">Los botones Hecho y Posponer aparecen en las notificaciones de Android y de escritorio; en iPhone no están disponibles.</p>
       </section>
 
+      <section class="set-section" aria-labelledby="set-digest">
+        <h4 id="set-digest">Resúmenes diarios</h4>
+        <p class="muted">Un aviso a la hora que elijas con lo que tienes pendiente. El de la noche trae un botón para pasar a mañana lo que quedó sin hacer. Llegan a los dispositivos con avisos activados.</p>
+        <label class="check"><input type="checkbox" id="digest-morning-on"> Resumen de la mañana</label>
+        <label class="field" for="digest-morning-time">Hora<select id="digest-morning-time"></select></label>
+        <label class="check"><input type="checkbox" id="digest-evening-on"> Cierre del día</label>
+        <label class="field" for="digest-evening-time">Hora<select id="digest-evening-time"></select></label>
+        <p id="digest-hint" class="muted" role="status"></p>
+      </section>
+
       <section class="set-section" aria-labelledby="set-account">
         <h4 id="set-account">Cuenta</h4>
         <p id="account-email" class="muted"></p>
@@ -203,6 +213,7 @@
   <script src="format.js"></script>
   <script src="nl.js"></script>
   <script src="edit-plan.js"></script>
+  <script src="digest.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
