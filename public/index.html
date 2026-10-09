@@ -173,6 +173,16 @@
             <option value="20">20 veces</option>
           </select>
         </label>
+        <label class="field" for="set-snooze">Posponer desde la notificación
+          <select id="set-snooze">
+            <option value="5">5 minutos</option>
+            <option value="10">10 minutos</option>
+            <option value="15">15 minutos</option>
+            <option value="30">30 minutos</option>
+            <option value="60">1 hora</option>
+          </select>
+        </label>
+        <p class="muted">Los botones Hecho y Posponer aparecen en las notificaciones de Android y de escritorio; en iPhone no están disponibles.</p>
       </section>
 
       <section class="set-section" aria-labelledby="set-account">
@@ -192,6 +202,7 @@
   <script src="firebase-config.js"></script>
   <script src="format.js"></script>
   <script src="nl.js"></script>
+  <script src="edit-plan.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

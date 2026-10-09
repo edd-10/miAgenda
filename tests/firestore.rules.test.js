@@ -302,3 +302,43 @@ test("users: se rechaza un nagMax fuera de las opciones o que no es número", as
   await assertFails(setDoc(doc(alice(), "users/alice"), { nagMax: 0 }));
   await assertFails(setDoc(doc(alice(), "users/alice"), { nagMax: 1000 }));
 });
+
+/* ---------- users: duración de "Posponer" ---------- */
+test("users: snoozeMin acepta 5, 10, 15, 30 y 60, solo o junto con las demás preferencias", async () => {
+  for (const n of [5, 10, 15, 30, 60]) await assertSucceeds(setDoc(doc(alice(), "users/alice"), { snoozeMin: n }));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), { timeFormat: "12", nagMax: 10, snoozeMin: 30 }));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), { snoozeMin: 15 }, { merge: true }));
+});
+
+test("users: se rechaza un snoozeMin fuera de las opciones o que no es número", async () => {
+  for (const bad of [0, 7, 45, 120, "10", -5, null]) await assertFails(setDoc(doc(alice(), "users/alice"), { snoozeMin: bad }));
+});
+
+/* ---------- lo que escribe el service worker con la sesión del usuario ---------- */
+// "Hecho" y "Posponer" desde la notificación son escrituras de cliente: pasan por estas mismas reglas.
+test("notificación → Hecho: done true y nagAt null sobre un pendiente ya avisado con insistencias en curso", async () => {
+  await seedTask("t1", { notified: true, nagMin: 10, nagAt: 1760517600000, nagCount: 2 });
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { done: true, nagAt: null }));
+});
+
+test("notificación → Posponer: remindAt nuevo, notified false, nagAt null y nagCount 0", async () => {
+  await seedTask("t1", { notified: true, nagMin: 10, nagAt: 1760517600000, nagCount: 2 });
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { remindAt: 1760999999000, notified: false, nagAt: null, nagCount: 0 }));
+});
+
+test("notificación → Posponer sobre un pendiente sin insistencias (anterior a esa función)", async () => {
+  await seedTask("t1", { notified: true });
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { remindAt: 1760999999000, notified: false, nagAt: null, nagCount: 0 }));
+});
+
+test("notificación: otra cuenta no puede marcar hecho ni posponer los pendientes ajenos", async () => {
+  await seedTask("t1", { notified: true });
+  await assertFails(updateDoc(doc(bob(), "tasks/t1"), { done: true, nagAt: null }));
+  await assertFails(updateDoc(doc(bob(), "tasks/t1"), { remindAt: 1760999999000, notified: false, nagAt: null, nagCount: 0 }));
+  await assertFails(updateDoc(doc(anon(), "tasks/t1"), { done: true, nagAt: null }));
+});
+
+test("posponer no permite dejar remindAt en null con un remindMin de aviso (la regla de consistencia sigue vigente)", async () => {
+  await seedTask("t1", { notified: true });
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { remindAt: null, notified: false }));
+});

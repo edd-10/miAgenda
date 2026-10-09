@@ -50,7 +50,7 @@ function makeWorld(start = T0) {
     }
     if (u.hostname === "fcm.googleapis.com") {
       const m = JSON.parse(init.body).message;
-      sends.push({ at: t, token: m.token, title: m.notification.title, body: m.notification.body });
+      sends.push({ at: t, token: m.token, title: m.data.title, body: m.data.body, data: m.data, message: m, ttl: m.webpush.headers.TTL });
       const r = fcmReply.get(m.token) || { status: 200, body: "{}" };
       return new Response(r.body ?? "{}", { status: r.status });
     }
@@ -81,9 +81,10 @@ function makeWorld(start = T0) {
     sends, logs, deletedTokens, fcmReply, tasks,
     get userReads() { return userReads; },
     failUserReads: (v = true) => { failUserReads = v; },
-    addUser(uid, timeFormat, nagMax) {
+    addUser(uid, timeFormat, nagMax, snoozeMin) {
       const fields = { timeFormat: val(timeFormat) };
       if (nagMax !== undefined) fields.nagMax = val(nagMax);
+      if (snoozeMin !== undefined) fields.snoozeMin = val(snoozeMin);
       users.set(uid, { updateTime: stamp(), fields });
     },
     field: (id, name) => { const f = tasks.get(id).fields[name]; return f === undefined ? undefined : f.nullValue !== undefined ? null : (f.booleanValue ?? Number(f.integerValue)); },
@@ -583,4 +584,56 @@ test("la última insistencia no deja otra programada (se corta en el acto, sin u
   assert.equal(w.sends[0].body, "Sigue pendiente (3 de 3) · 10:30");
   assert.equal(w.field("a", "nagAt"), null);
   assert.equal(w.field("a", "nagCount"), 3);
+});
+
+/* ---------- Botones de la notificación: mensaje solo de datos ---------- */
+test("el mensaje es solo de datos (sin 'notification') y lleva el id del pendiente", async () => {
+  const w = makeWorld();
+  w.addTask("tarea-1", { due: T0 + 5_000, title: "Dentista", time: "17:00" }); w.addToken("tokA");
+  await go(w);
+  const m = w.sends[0].message;
+  assert.equal(m.notification, undefined);                // si llevara 'notification', el navegador la mostraría sin botones
+  assert.deepEqual(m.data, { title: "⏰ Dentista", body: "Ahora · 17:00", taskId: "tarea-1", snoozeMin: "10", kind: "reminder" });
+  assert.equal(m.webpush.headers.Urgency, "high");
+});
+
+test("todos los valores de 'data' son texto (FCM lo exige)", async () => {
+  const w = makeWorld();
+  w.addTask("t", { due: T0 + 5_000 }); w.addToken("tokA");
+  await go(w);
+  for (const [k, v] of Object.entries(w.sends[0].data)) assert.equal(typeof v, "string", k);
+});
+
+test("la duración de 'Posponer' sale de las preferencias de la cuenta; valores raros caen a 10", async () => {
+  for (const [pref, expected] of [[30, "30"], [60, "60"], [5, "5"], [7, "10"], [0, "10"], [1000, "10"]]) {
+    const w = makeWorld();
+    w.addUser("u1", "24", undefined, pref);
+    w.addTask("a", { due: T0 + 5_000 }); w.addToken("tokA");
+    await go(w);
+    assert.equal(w.sends[0].data.snoozeMin, expected, `snoozeMin ${pref}`);
+  }
+});
+
+test("las insistencias también llevan los botones (kind 'nag') y el mismo id", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "24", undefined, 15);
+  w.addNag("a", { nagAt: T0 + 5_000 }); w.addToken("tokA");
+  await go(w);
+  assert.equal(w.sends[0].data.kind, "nag");
+  assert.equal(w.sends[0].data.taskId, "a");
+  assert.equal(w.sends[0].data.snoozeMin, "15");
+  assert.match(w.sends[0].data.body, /^Sigue pendiente \(1 de 5\)/);
+});
+
+test("caducidad (TTL): 1 día para el aviso; una insistencia caduca antes de la siguiente", async () => {
+  const w = makeWorld();
+  w.addTask("a", { due: T0 + 5_000 }); w.addToken("tokA");
+  await go(w);
+  assert.equal(w.sends[0].ttl, "86400");
+  for (const [nagMin, ttl] of [[5, "300"], [10, "600"], [15, "900"], [30, "1800"]]) {
+    const w2 = makeWorld();
+    w2.addNag("b", { nagAt: T0 + 5_000, nagMin }); w2.addToken("tokA");
+    await go(w2);
+    assert.equal(w2.sends[0].ttl, ttl, `cada ${nagMin} min`);
+  }
 });

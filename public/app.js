@@ -17,6 +17,7 @@ let editingId = null;      // id del pendiente que se está editando (null = for
 let mode = "month";        // vista activa: "month" (calendario) o "today"
 let timeFormat = loadTimeFormat();   // "24" | "12": solo cambia cómo se muestran y eligen las horas (se guardan siempre como HH:MM)
 let nagMax = 5;            // máximo de repeticiones al insistir (por cuenta: users/{uid}.nagMax)
+let snoozeMin = 10;        // minutos que pospone el botón de la notificación (por cuenta: users/{uid}.snoozeMin)
 let unsubPrefs = null;
 const pendingDeletes = new Set();   // ids ocultos que se borran de Firestore al vencer UNDO_MS
 let deleteTimer = null;
@@ -385,12 +386,10 @@ $("form").onsubmit = async (e) => {
 async function saveEdit(data) {
   const old = tasks.find((t) => t.id === editingId);
   if (!old) { toast("Ese pendiente ya no existe"); return cancelEdit(); }
-  // Si ya se había avisado y el aviso cambia, se vuelve a armar para que se envíe de nuevo.
-  if (old.notified && data.remindAt !== old.remindAt) data.notified = false;
-  // Cambiar la hora del aviso o el intervalo reinicia la cadena de insistencias (la programa el Worker).
-  if (data.remindAt !== old.remindAt || data.nagMin !== (old.nagMin || 0)) { data.nagAt = null; data.nagCount = 0; }
+  // Qué se escribe lo decide EditPlan: p. ej. un aviso pospuesto desde la notificación no vuelve a su hora original al corregir el título.
+  const update = EditPlan.planEdit(old, data);
   try {
-    await db.collection("tasks").doc(editingId).update(data);
+    await db.collection("tasks").doc(editingId).update(update);
     toast(data.date !== old.date ? `Movido al ${data.date}` : "Cambios guardados");
     cancelEdit();
   } catch (err) {
@@ -580,7 +579,9 @@ function subscribePrefs() {
       const d = snap.exists ? snap.data() : {};
       const next = d.timeFormat === "12" ? "12" : "24";
       const max = [3, 5, 10, 20].includes(d.nagMax) ? d.nagMax : 5;
+      const snooze = [5, 10, 15, 30, 60].includes(d.snoozeMin) ? d.snoozeMin : 10;
       let changed = false;
+      if (snooze !== snoozeMin) { snoozeMin = snooze; changed = true; }
       if (next !== timeFormat) { setTimeFormat(next, false); changed = true; }
       if (max !== nagMax) { nagMax = max; syncNagField(); changed = true; }
       if (changed && !$("settings").hidden) renderSettings();
@@ -616,6 +617,7 @@ function renderSettings() {
   $("theme-hint").textContent = t.mode === "custom" ? Theme.describe(t) : "";
   document.querySelector(`input[name="time-format"][value="${timeFormat}"]`).checked = true;
   $("set-nagmax").value = String(nagMax);
+  $("set-snooze").value = String(snoozeMin);
   $("account-email").textContent = user && user.email ? user.email : "";
   renderNotifSettings();
 }
@@ -644,6 +646,14 @@ $("set-nagmax").onchange = (e) => {
   if (user) {
     db.collection("users").doc(user.uid).set({ nagMax }, { merge: true })
       .catch((err) => toast("No se pudo guardar el máximo de repeticiones: " + err.message));
+  }
+};
+
+$("set-snooze").onchange = (e) => {
+  snoozeMin = Number(e.target.value);
+  if (user) {
+    db.collection("users").doc(user.uid).set({ snoozeMin }, { merge: true })
+      .catch((err) => toast("No se pudo guardar la duración de Posponer: " + err.message));
   }
 };
 
@@ -695,7 +705,8 @@ syncNagField();
 // App abierta: FCM no muestra nada solo, así que lo mostramos nosotros.
 if (messaging) {
   messaging.onMessage((p) => {
-    const n = p.notification || {};
-    toast(`⏰ ${n.title || ""} ${n.body || ""}`.trim());
+    const d = p.data || {}, n = p.notification || {};
+    // Con "data" el título ya trae el ⏰; con "notification" (mensajes anteriores a los botones) se le añade.
+    toast((d.title ? `${d.title} ${d.body || ""}` : `⏰ ${n.title || ""} ${n.body || ""}`).trim());
   });
 }
