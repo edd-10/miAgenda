@@ -87,6 +87,20 @@ El botón ⚙ de la esquina abre la ventana de ajustes:
 - **Avisos:** activar o desactivar en este dispositivo.
 - **Cuenta:** correo y cerrar sesión.
 
+## Responder desde la notificación
+
+Las notificaciones traen los botones **✓ Hecho** y **Posponer N min** (Android y escritorio; iOS no soporta botones en notificaciones web: allí solo se abre la app al tocarlas). Funcionan con la app cerrada y sin ningún servidor extra:
+
+- El Worker ya no manda una notificación lista, sino **solo datos** (`title`, `body`, `taskId`, `snoozeMin`, `kind`). El service worker (`public/firebase-messaging-sw.js`) arma la notificación con los botones y una etiqueta por pendiente (una insistencia reemplaza a la anterior).
+- Al pulsar un botón, `public/sw-actions.js` reutiliza **tu sesión**: lee el token de refresco que Firebase Auth guarda en IndexedDB, obtiene un token de acceso y escribe en Firestore **con las mismas reglas de seguridad que la app**. No hay endpoint público ni secretos nuevos, y no puede hacer nada que tu sesión no pueda.
+  - **Hecho**: `done: true` y `nagAt: null` (corta las insistencias), igual que la casilla de la app.
+  - **Posponer**: reprograma el aviso a ahora + N minutos (Ajustes → Avisos → "Posponer desde la notificación": 5, 10, 15, 30 o 60 min) y reinicia las insistencias. El pendiente sigue en su fecha y hora originales; solo cambia el aviso.
+- Si algo falla (sin sesión, sin red, token revocado) aparece una notificación "No se pudo completar la acción" para hacerlo desde la app.
+- Corregir el título de un pendiente pospuesto **no** devuelve el aviso a su hora original (`public/edit-plan.js`).
+- Las notificaciones caducan en el servicio push (TTL): el primer aviso en 1 día, una insistencia antes de la siguiente.
+
+**Orden de despliegue:** reglas → hosting → Worker. Si el Worker (solo datos) se despliega antes de que el navegador tenga el service worker nuevo, el aviso aparecería como "el sitio se actualizó en segundo plano". Abre la app una vez tras desplegar para que se instale el service worker nuevo.
+
 ## Agregar rápido (lenguaje natural)
 
 La barra de arriba entiende frases en español: *"dentista el viernes 5pm avisar 30 min antes"*, *"recuérdame llamar a mamá mañana a las 9"*, *"en 2 horas sacar la pizza"*, *"pagar renta el 15 de noviembre insistir cada 10 min"*. Mientras escribes muestra lo que entendió (fecha, hora, aviso, insistencia) para corregirlo antes de agregar; Enter agrega y el aviso trae "Deshacer".

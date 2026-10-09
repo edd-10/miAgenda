@@ -14,7 +14,11 @@ export const CONFIG = {
   RECHECK_MS: 800,                // se vuelve a leer la tarea esto antes del envío (por si se borró o cambió)
   BATCH_LIMIT: 12,                // máx. de avisos + insistencias por ejecución (el plan gratuito limita las subpeticiones)
   NAG_MAX_DEFAULT: 5,             // repeticiones máximas si la cuenta no ha elegido otra (users/{uid}.nagMax)
+  SNOOZE_DEFAULT: 10,             // minutos que pospone el botón "Posponer" si la cuenta no eligió otro (users/{uid}.snoozeMin)
+  TTL_REMINDER_S: 86_400,         // cuánto guarda el servicio push un aviso si el dispositivo está apagado (1 día)
+  TTL_NAG_MAX_S: 3_600,           // una insistencia caduca antes de que llegue la siguiente (y nunca más de 1 h)
 };
+const SNOOZE_OPTIONS = [5, 10, 15, 30, 60];
 
 const fsBase = (pid) => `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents`;
 const str = (f) => f?.stringValue;
@@ -98,19 +102,20 @@ async function readTask(c, id) {
   return res.json();
 }
 
-// Preferencias de la cuenta (users/{uid}): formato de hora y máximo de insistencias. Cualquier fallo o ausencia →
+// Preferencias de la cuenta (users/{uid}): formato de hora, máximo de insistencias y duración de "Posponer". Cualquier fallo o ausencia →
 // valores por defecto: nunca impide el aviso.
 async function readPrefs(c, uid) {
-  const defaults = { timeFormat: "24", nagMax: c.config.NAG_MAX_DEFAULT };
+  const defaults = { timeFormat: "24", nagMax: c.config.NAG_MAX_DEFAULT, snoozeMin: c.config.SNOOZE_DEFAULT };
   try {
     const res = await c.fetch(`${fsBase(c.pid)}/users/${encodeURIComponent(uid)}`, { headers: headers(c) });
     if (res.status === 404) return defaults;
     if (!res.ok) { c.log("No se pudieron leer las preferencias:", res.status); return defaults; }
     const f = (await res.json()).fields || {};
-    const nagMax = int(f.nagMax);
+    const nagMax = int(f.nagMax), snoozeMin = int(f.snoozeMin);
     return {
       timeFormat: str(f.timeFormat) === "12" ? "12" : "24",
       nagMax: Number.isInteger(nagMax) && nagMax >= 1 && nagMax <= 50 ? nagMax : defaults.nagMax,
+      snoozeMin: SNOOZE_OPTIONS.includes(snoozeMin) ? snoozeMin : defaults.snoozeMin,
     };
   } catch (e) {
     c.log("No se pudieron leer las preferencias:", String(e));
@@ -124,14 +129,25 @@ async function sendToDevice(c, deviceToken, task) {
   const t = formatTime(task.time, task.timeFormat);
   const body = task.repeat ? `Sigue pendiente (${task.repeat.n} de ${task.repeat.max}) · ${t}`
     : task.remindMin > 0 ? `Es a las ${t}` : `Ahora · ${t}`;
+  // Una insistencia caduca antes de que llegue la siguiente, para que un teléfono apagado no reciba un montón al encender.
+  const ttl = task.repeat
+    ? Math.min(c.config.TTL_NAG_MAX_S, Math.max(60, Math.round(task.repeat.stepMs / 1000)))
+    : c.config.TTL_REMINDER_S;
   const res = await c.fetch(`https://fcm.googleapis.com/v1/projects/${c.pid}/messages:send`, {
     method: "POST",
     headers: headers(c, { "content-type": "application/json" }),
     body: JSON.stringify({
       message: {
         token: deviceToken,
-        notification: { title: `⏰ ${task.title}`, body },
-        webpush: { fcm_options: { link: `https://${c.pid}.web.app/` }, headers: { Urgency: "high" } },
+        // Solo datos (sin "notification"): el service worker arma la notificación para poder ponerle los botones Hecho/Posponer.
+        data: {
+          title: `⏰ ${task.title}`,
+          body,
+          taskId: task.id,
+          snoozeMin: String(task.snoozeMin),
+          kind: task.repeat ? "nag" : "reminder",
+        },
+        webpush: { headers: { Urgency: "high", TTL: String(ttl) } },
       },
     }),
   });
@@ -155,7 +171,9 @@ async function sendAll(c, deviceTokens, info) {
   return { results, delivered, retry: !delivered && results.includes("retry") };
 }
 
-const infoOf = (fields, prefs, repeat) => ({
+const infoOf = (id, fields, prefs, repeat) => ({
+  id,
+  snoozeMin: prefs.snoozeMin,
   title: str(fields.title) || "Pendiente",
   time: str(fields.time) || "",
   remindMin: int(fields.remindMin) || 0,
@@ -207,7 +225,7 @@ async function processReminder(c, doc, tokensFor, prefsFor) {
     }
     current = fresh; updateTime = fresh.updateTime;
   }
-  const info = infoOf(current.fields, await prefsPromise);
+  const info = infoOf(id, current.fields, await prefsPromise);
   const deviceTokens = await tokensPromise;
 
   await sleepUntil(c, dueAt - LEAD_MS);
@@ -257,7 +275,7 @@ async function processNag(c, doc, tokensFor, prefsFor) {
     if ((int(fresh.fields.nagCount) || 0) !== n) return "reset";   // el usuario la editó o la reprogramó: la cadena se reinició
     current = fresh; updateTime = fresh.updateTime;
   }
-  const info = infoOf(current.fields, prefs, { n, max: prefs.nagMax });
+  const info = infoOf(id, current.fields, prefs, { n, max: prefs.nagMax, stepMs: step });
   const deviceTokens = await tokensPromise;
 
   await sleepUntil(c, dueAt - LEAD_MS);

@@ -54,14 +54,15 @@ service cloud.firestore {
       allow delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
-    // Preferencias por cuenta: formato de hora y máximo de insistencias (el Worker las lee con la cuenta de servicio).
+    // Preferencias por cuenta: formato de hora, máximo de insistencias y duración de "Posponer" (el Worker las lee con la cuenta de servicio).
     match /users/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
       allow create, update: if signedIn() && request.auth.uid == uid
-                            && request.resource.data.keys().hasOnly(['timeFormat', 'nagMax'])
+                            && request.resource.data.keys().hasOnly(['timeFormat', 'nagMax', 'snoozeMin'])
                             && request.resource.data.size() >= 1
                             && request.resource.data.get('timeFormat', '24') in ['12', '24']
-                            && request.resource.data.get('nagMax', 5) in [3, 5, 10, 20];
+                            && request.resource.data.get('nagMax', 5) in [3, 5, 10, 20]
+                            && request.resource.data.get('snoozeMin', 10) in [5, 10, 15, 30, 60];
     }
 
     // Tokens de notificación: solo se escriben/borran los propios (el Worker los lee con cuenta de servicio).
