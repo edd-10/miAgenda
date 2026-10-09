@@ -12,6 +12,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Mi Agenda">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -33,9 +34,7 @@
       </div>
       <div class="actions">
         <button id="today" class="btn">Este mes</button>
-        <button id="btn-notif" class="btn" hidden>&#128276; Activar avisos</button>
-        <button id="btn-notif-off" class="btn" hidden>Desactivar avisos</button>
-        <button id="btn-logout" class="btn">Salir</button>
+        <button id="btn-settings" class="icon-btn" type="button" aria-label="Ajustes" title="Ajustes">&#9881;&#xFE0E;</button>
       </div>
     </header>
 
@@ -82,7 +81,17 @@
         <input id="f-title" type="text" aria-label="Título del pendiente" placeholder="Nuevo pendiente" maxlength="120" required>
         <label id="f-date-row" hidden>Fecha <input id="f-date" type="date"></label>
         <div class="row">
-          <label>Hora <input id="f-time" type="time" value="09:00" required></label>
+          <div class="field" role="group" aria-labelledby="time-label">
+            <span id="time-label">Hora</span>
+            <div class="time-picker">
+              <select id="f-hour" aria-label="Hora"></select>
+              <select id="f-min" aria-label="Minutos"></select>
+              <select id="f-ampm" aria-label="a. m. o p. m." hidden>
+                <option value="am">a. m.</option>
+                <option value="pm">p. m.</option>
+              </select>
+            </div>
+          </div>
           <label>Avisar
             <select id="f-remind">
               <option value="0">A la hora</option>
@@ -103,6 +112,52 @@
     </div>
   </div>
 
+  <!-- Ajustes -->
+  <div id="settings" class="modal" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="sheet-head">
+        <h3 id="settings-title">Ajustes</h3>
+        <button id="settings-close" class="icon-btn" type="button" aria-label="Cerrar">&times;</button>
+      </div>
+
+      <section class="set-section" aria-labelledby="set-theme">
+        <h4 id="set-theme">Apariencia</h4>
+        <div class="choices" role="radiogroup" aria-labelledby="set-theme">
+          <label class="choice"><input type="radio" name="theme-mode" value="system"> Sistema</label>
+          <label class="choice"><input type="radio" name="theme-mode" value="light"> Claro</label>
+          <label class="choice"><input type="radio" name="theme-mode" value="dark"> Oscuro</label>
+          <label class="choice"><input type="radio" name="theme-mode" value="custom"> Personalizado</label>
+        </div>
+        <div id="theme-custom" class="custom-colors" hidden>
+          <label class="color-row">Color de acento <input id="c-accent" type="color" value="#3b6ef5"></label>
+          <label class="color-row">Color de fondo <input id="c-bg" type="color" value="#f6f7fb"></label>
+          <p id="theme-hint" class="muted" role="status"></p>
+          <button id="theme-reset" class="btn" type="button">Restablecer colores</button>
+        </div>
+      </section>
+
+      <section class="set-section" aria-labelledby="set-time">
+        <h4 id="set-time">Formato de hora</h4>
+        <div class="choices" role="radiogroup" aria-labelledby="set-time">
+          <label class="choice"><input type="radio" name="time-format" value="24"> 24 horas <span class="muted">(21:30)</span></label>
+          <label class="choice"><input type="radio" name="time-format" value="12"> 12 horas <span class="muted">(9:30 p. m.)</span></label>
+        </div>
+      </section>
+
+      <section class="set-section" aria-labelledby="set-notif">
+        <h4 id="set-notif">Avisos</h4>
+        <p id="notif-status" class="muted" role="status"></p>
+        <button id="btn-notif-toggle" class="btn" type="button"></button>
+      </section>
+
+      <section class="set-section" aria-labelledby="set-account">
+        <h4 id="set-account">Cuenta</h4>
+        <p id="account-email" class="muted"></p>
+        <button id="btn-logout" class="btn danger" type="button">Cerrar sesión</button>
+      </section>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -110,6 +165,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js"></script>
   <script src="firebase-config.js"></script>
+  <script src="format.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

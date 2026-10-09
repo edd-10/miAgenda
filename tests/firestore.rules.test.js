@@ -207,3 +207,38 @@ test("cualquier otra colección está denegada", async () => {
   await assertFails(setDoc(doc(alice(), "otra/x"), { a: 1 }));
   await assertFails(getDoc(doc(alice(), "otra/x")));
 });
+
+/* ---------- users (preferencias) ---------- */
+test("users: el dueño puede crear, actualizar y leer sus preferencias", async () => {
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), { timeFormat: "12" }));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), { timeFormat: "24" }, { merge: true }));
+  await assertSucceeds(updateDoc(doc(alice(), "users/alice"), { timeFormat: "12" }));
+  await assertSucceeds(getDoc(doc(alice(), "users/alice")));
+});
+
+const invalidPrefs = {
+  "un formato desconocido": { timeFormat: "13" },
+  "un número en vez de texto": { timeFormat: 12 },
+  "un campo extra": { timeFormat: "12", isAdmin: true },
+  "sin timeFormat": {},
+};
+for (const [name, data] of Object.entries(invalidPrefs)) {
+  test(`users: se rechaza guardar ${name}`, async () => {
+    await assertFails(setDoc(doc(alice(), "users/alice"), data));
+  });
+}
+
+test("users: nadie puede leer ni escribir las preferencias de otra cuenta", async () => {
+  await seed("users/alice", { timeFormat: "12" });
+  await assertFails(getDoc(doc(bob(), "users/alice")));
+  await assertFails(setDoc(doc(bob(), "users/alice"), { timeFormat: "24" }));
+  await assertFails(updateDoc(doc(bob(), "users/alice"), { timeFormat: "24" }));
+  await assertFails(setDoc(doc(bob(), "users/bob2"), { timeFormat: "24" }));   // ni crear con un id que no es el suyo
+});
+
+test("users: sin sesión no hay acceso, y las preferencias no se pueden borrar desde el cliente", async () => {
+  await seed("users/alice", { timeFormat: "12" });
+  await assertFails(getDoc(doc(anon(), "users/alice")));
+  await assertFails(setDoc(doc(anon(), "users/alice"), { timeFormat: "24" }));
+  await assertFails(deleteDoc(doc(alice(), "users/alice")));
+});

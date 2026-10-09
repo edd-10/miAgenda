@@ -22,6 +22,7 @@ Cloudflare Worker ────────┘  cada minuto: busca recordatorios 
 |---|---|---|
 | `tasks` | auto-ID | `uid`, `title`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`), `remindMin`, `remindAt` (ms o `null`), `notified`, `done`, `createdAt` |
 | `tokens` | token FCM | `uid`, `ua`, `updatedAt` |
+| `users` | uid | `timeFormat` (`"12"` o `"24"`) |
 
 `notified` solo lo modifica el Worker; las reglas lo impiden al cliente.
 
@@ -66,15 +67,25 @@ npm run deploy:hosting     # aplicación web
 
 ```bash
 npm run check              # sintaxis de JS y validez de los JSON
+npm run test:client        # pruebas del tema (contraste) y del formato de hora (sin dependencias)
 npm run test:worker        # pruebas de la lógica de recordatorios (reloj simulado, sin dependencias)
 npm run test:rules         # pruebas de firestore.rules con el emulador (requiere Java 21+)
-npm test                   # las dos anteriores
+npm test                   # las tres anteriores
 npx firebase emulators:start --only hosting,firestore,auth
 ```
 
 `test:rules` descarga el emulador de Firestore la primera vez. En Windows, a veces el proceso de Java del emulador queda abierto al terminar y ocupa el puerto 8080; si la siguiente ejecución dice "port taken", cierra ese proceso `java` y vuelve a intentarlo.
 
 Para ver los logs del Worker: `npm --prefix worker run tail`.
+
+## Ajustes
+
+El botón ⚙ de la esquina abre la ventana de ajustes:
+
+- **Apariencia:** sistema, claro, oscuro o personalizado (color de acento y color de fondo). Se guarda **por dispositivo** (`localStorage`). Con colores personalizados, `public/theme.js` deriva el resto de la paleta y garantiza texto legible (≥ 4.5:1) sobre el fondo elegido.
+- **Formato de hora:** 24 h o 12 h (a. m./p. m.). Se guarda **por cuenta** en `users/{uid}.timeFormat` para que el Worker escriba el aviso en ese formato. Los pendientes siguen guardándose siempre como `HH:MM` (24 h): solo cambia cómo se eligen y se muestran.
+- **Avisos:** activar o desactivar en este dispositivo.
+- **Cuenta:** correo y cerrar sesión.
 
 ## Precisión de los avisos
 

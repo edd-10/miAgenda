@@ -1,14 +1,24 @@
+/* Paletas. Claro es la base; el oscuro se activa con el tema del sistema (si no hay elección) o con data-theme="dark".
+   data-theme="custom" no define nada aquí: theme.js pone las variables en línea a partir del acento y el fondo elegidos. */
 :root {
   --bg: #f6f7fb; --card: #fff; --text: #1d2330; --muted: #6b7385; --line: #e3e6ee;
   --primary: #3b6ef5; --primary-dark: #1f46c4; --today: #e8efff; --danger: #d33b3b;
+  --accent-text: #3b6ef5; --on-primary: #fff;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #12151c; --card: #1b2029; --text: #e8ebf2; --muted: #98a0b3; --line: #2b3240;
     --primary: #6c93ff; --primary-dark: #8aa8ff; --today: #232d47; --danger: #ff6b6b;
+    --accent-text: #6c93ff; --on-primary: #fff;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #12151c; --card: #1b2029; --text: #e8ebf2; --muted: #98a0b3; --line: #2b3240;
+  --primary: #6c93ff; --primary-dark: #8aa8ff; --today: #232d47; --danger: #ff6b6b;
+  --accent-text: #6c93ff; --on-primary: #fff;
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -25,7 +35,7 @@ button, input, select { font: inherit; color: inherit; }
   padding: 8px 14px; cursor: pointer;
 }
 .btn:hover { border-color: var(--primary); }
-.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); font-weight: 600; }
 .btn.primary:hover { background: var(--primary-dark); }
 .icon-btn {
   background: none; border: 0; font-size: 28px; line-height: 1; width: 40px; height: 40px;
@@ -58,9 +68,9 @@ main { max-width: 1100px; margin: 0 auto; padding-bottom: 24px; }
 .day.other { opacity: .45; }
 .day.today { background: var(--today); border-color: var(--primary); }
 .day .num { font-weight: 600; font-size: 14px; }
-.day.today .num { color: var(--primary); }
+.day.today .num { color: var(--accent-text); }
 .chip {
-  font-size: 12px; background: var(--primary); color: #fff; border-radius: 6px;
+  font-size: 12px; background: var(--primary); color: var(--on-primary); border-radius: 6px;
   padding: 1px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .chip.done { background: var(--line); color: var(--muted); text-decoration: line-through; }
@@ -82,12 +92,13 @@ main { max-width: 1100px; margin: 0 auto; padding-bottom: 24px; }
   background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
   padding: 8px 14px; cursor: pointer; color: var(--muted); font-weight: 600;
 }
-.tab[aria-current="page"] { color: var(--primary); border-bottom-color: var(--primary); }
+.tab[aria-current="page"] { color: var(--accent-text); border-bottom-color: var(--primary); }
 .tab:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; border-radius: 6px; }
 
 .today-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 0; }
 .today-head h2 { margin: 0; font-size: 20px; }
 .muted { color: var(--muted); margin: 2px 0 0; font-size: 14px; }
+.muted:empty { display: none; }
 #view-today .item { background: var(--card); }
 
 .list { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 8px; }
@@ -96,7 +107,7 @@ main { max-width: 1100px; margin: 0 auto; padding-bottom: 24px; }
   display: flex; align-items: center; gap: 10px; border: 1px solid var(--line);
   border-radius: 10px; padding: 8px 10px;
 }
-.item .time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--primary); }
+.item .time { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--accent-text); }
 .item .title { flex: 1; word-break: break-word; }
 .item.done .title { text-decoration: line-through; color: var(--muted); }
 .item input[type=checkbox] { width: 20px; height: 20px; }
@@ -111,7 +122,11 @@ main { max-width: 1100px; margin: 0 auto; padding-bottom: 24px; }
 .form-actions .btn { flex: 1; }
 .item .edit { font-size: 18px; width: 32px; height: 32px; }
 .item.editing { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 10px; }
-.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.time-picker { display: flex; gap: 6px; }
+.time-picker select { width: auto; flex: 1; min-width: 0; padding-left: 4px; padding-right: 4px; }
+.time-picker #f-ampm { flex: 1.5; }
+.row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 10px; }
 .row label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 
 .toast {
@@ -130,6 +145,24 @@ main { max-width: 1100px; margin: 0 auto; padding-bottom: 24px; }
   color: #9db8ff; font-weight: 600; cursor: pointer;
 }
 .toast button:hover, .toast button:focus-visible { background: rgba(255, 255, 255, .15); }
+
+#btn-settings { font-size: 24px; }
+.btn.danger { color: var(--danger); }
+.btn.danger:hover { border-color: var(--danger); }
+
+.set-section { border-top: 1px solid var(--line); padding: 14px 0 4px; }
+.set-section:first-of-type { margin-top: 8px; }
+.set-section h4 { margin: 0 0 8px; font-size: 14px; }
+.set-section p { margin: 0 0 10px; }
+.choices { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 8px; }
+.choice { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.choice input { width: 18px; height: 18px; accent-color: var(--primary); }
+.custom-colors { display: grid; gap: 10px; margin-top: 10px; }
+.color-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.color-row input[type=color] {
+  width: 56px; height: 36px; padding: 2px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+}
+.custom-colors .btn { justify-self: start; }
 
 @media (max-width: 600px) {
   body { padding-left: 6px; padding-right: 6px; }

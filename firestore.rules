@@ -43,6 +43,14 @@ service cloud.firestore {
       allow delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
+    // Preferencias por cuenta (por ahora solo el formato de hora; el Worker lo lee con la cuenta de servicio).
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+                            && request.resource.data.keys().hasOnly(['timeFormat'])
+                            && request.resource.data.timeFormat in ['12', '24'];
+    }
+
     // Tokens de notificación: solo se escriben/borran los propios (el Worker los lee con cuenta de servicio).
     match /tokens/{token} {
       allow create, update: if signedIn()
