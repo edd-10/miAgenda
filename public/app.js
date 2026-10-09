@@ -16,6 +16,7 @@ let lastFocus = null;      // elemento que abrió el modal, para devolverle el f
 let editingId = null;      // id del pendiente que se está editando (null = formulario de alta)
 let mode = "month";        // vista activa: "month" (calendario) o "today"
 let timeFormat = loadTimeFormat();   // "24" | "12": solo cambia cómo se muestran y eligen las horas (se guardan siempre como HH:MM)
+let nagMax = 5;            // máximo de repeticiones al insistir (por cuenta: users/{uid}.nagMax)
 let unsubPrefs = null;
 const pendingDeletes = new Set();   // ids ocultos que se borran de Firestore al vencer UNDO_MS
 let deleteTimer = null;
@@ -249,7 +250,7 @@ function buildItem(t) {
 
   const cb = document.createElement("input");
   cb.type = "checkbox"; cb.checked = !!t.done; cb.setAttribute("aria-label", `Completado: ${t.title}`);
-  cb.onchange = () => db.collection("tasks").doc(t.id).update({ done: cb.checked });
+  cb.onchange = () => db.collection("tasks").doc(t.id).update(cb.checked ? { done: true, nagAt: null } : { done: false });
 
   const time = document.createElement("span"); time.className = "time"; time.textContent = fmtTime(t.time);
   const title = document.createElement("span"); title.className = "title"; title.textContent = t.title;
@@ -263,7 +264,14 @@ function buildItem(t) {
   del.className = "icon-btn del"; del.type = "button"; del.textContent = "×"; del.title = "Eliminar"; del.setAttribute("aria-label", `Eliminar: ${t.title}`);
   del.onclick = () => scheduleDelete(t);
 
-  li.append(cb, time, title, ed, del);
+  li.append(cb, time, title);
+  if (t.nagMin > 0 && !t.done) {
+    const nag = document.createElement("span");
+    nag.className = "nag"; nag.textContent = "🔁"; nag.title = `Insiste cada ${t.nagMin} min`;
+    nag.setAttribute("role", "img"); nag.setAttribute("aria-label", nag.title);
+    li.append(nag);
+  }
+  li.append(ed, del);
   return li;
 }
 
@@ -301,6 +309,8 @@ function startEdit(t) {
   $("f-title").value = t.title;
   setTimeValue(t.time);
   $("f-remind").value = String(t.remindMin);
+  $("f-nag").value = String(t.nagMin || 0);
+  syncNagField();
   $("f-date").value = t.date;
   $("f-date-row").hidden = false;
   $("f-submit").textContent = "Guardar";
@@ -309,10 +319,22 @@ function startEdit(t) {
   $("f-title").focus();
 }
 
+// "Insistir" solo tiene sentido si hay aviso; con "Sin aviso" se desactiva.
+function syncNagField() {
+  const off = $("f-remind").value === "-1";
+  $("f-nag").disabled = off;
+  if (off) $("f-nag").value = "0";
+  $("f-nag-hint").textContent = !off && $("f-nag").value !== "0"
+    ? `Repite el aviso hasta ${nagMax} veces, o hasta que lo marques como hecho.` : "";
+}
+$("f-remind").onchange = syncNagField;
+$("f-nag").onchange = syncNagField;
+
 function cancelEdit() {
   editingId = null;
   $("form").reset();
   setTimeValue("09:00");
+  syncNagField();
   $("f-date-row").hidden = true;
   $("f-submit").textContent = "Agregar";
   $("f-cancel").hidden = true;
@@ -325,6 +347,7 @@ $("form").onsubmit = async (e) => {
   const title = $("f-title").value.trim();
   const time = getTimeValue();
   const remindMin = Number($("f-remind").value);
+  const nagMin = remindMin >= 0 ? Number($("f-nag").value) : 0;
   const date = editingId ? $("f-date").value : selectedDate;
   if (!title || !time || !date) return;
 
@@ -333,12 +356,12 @@ $("form").onsubmit = async (e) => {
   const when = new Date(y, m - 1, d, hh, mm).getTime();       // instante absoluto (ms UTC)
   const remindAt = remindMin >= 0 ? when - remindMin * 60000 : null;
 
-  if (editingId) return saveEdit({ title, date, time, remindMin, remindAt });
+  if (editingId) return saveEdit({ title, date, time, remindMin, remindAt, nagMin });
 
   try {
     await db.collection("tasks").add({
       uid: user.uid, title, date, time,
-      remindMin, remindAt, notified: false, done: false,
+      remindMin, remindAt, notified: false, done: false, nagMin, nagAt: null, nagCount: 0,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     $("f-title").value = "";
@@ -355,6 +378,8 @@ async function saveEdit(data) {
   if (!old) { toast("Ese pendiente ya no existe"); return cancelEdit(); }
   // Si ya se había avisado y el aviso cambia, se vuelve a armar para que se envíe de nuevo.
   if (old.notified && data.remindAt !== old.remindAt) data.notified = false;
+  // Cambiar la hora del aviso o el intervalo reinicia la cadena de insistencias (la programa el Worker).
+  if (data.remindAt !== old.remindAt || data.nagMin !== (old.nagMin || 0)) { data.nagAt = null; data.nagCount = 0; }
   try {
     await db.collection("tasks").doc(editingId).update(data);
     toast(data.date !== old.date ? `Movido al ${data.date}` : "Cambios guardados");
@@ -470,8 +495,13 @@ function subscribePrefs() {
   if (unsubPrefs) unsubPrefs();
   unsubPrefs = db.collection("users").doc(user.uid).onSnapshot(
     (snap) => {
-      const next = snap.exists && snap.data().timeFormat === "12" ? "12" : "24";
-      if (next !== timeFormat) { setTimeFormat(next, false); if (!$("settings").hidden) renderSettings(); }
+      const d = snap.exists ? snap.data() : {};
+      const next = d.timeFormat === "12" ? "12" : "24";
+      const max = [3, 5, 10, 20].includes(d.nagMax) ? d.nagMax : 5;
+      let changed = false;
+      if (next !== timeFormat) { setTimeFormat(next, false); changed = true; }
+      if (max !== nagMax) { nagMax = max; syncNagField(); changed = true; }
+      if (changed && !$("settings").hidden) renderSettings();
     },
     (e) => console.warn("No se pudieron leer las preferencias:", e)
   );
@@ -503,6 +533,7 @@ function renderSettings() {
   $("theme-custom").hidden = t.mode !== "custom";
   $("theme-hint").textContent = t.mode === "custom" ? Theme.describe(t) : "";
   document.querySelector(`input[name="time-format"][value="${timeFormat}"]`).checked = true;
+  $("set-nagmax").value = String(nagMax);
   $("account-email").textContent = user && user.email ? user.email : "";
   renderNotifSettings();
 }
@@ -524,6 +555,15 @@ $("theme-reset").onclick = () => { applyTheme({ accent: Theme.DEFAULTS.accent, b
 document.querySelectorAll('input[name="time-format"]').forEach((r) => {
   r.onchange = () => setTimeFormat(r.value, true);
 });
+
+$("set-nagmax").onchange = (e) => {
+  nagMax = Number(e.target.value);
+  syncNagField();
+  if (user) {
+    db.collection("users").doc(user.uid).set({ nagMax }, { merge: true })
+      .catch((err) => toast("No se pudo guardar el máximo de repeticiones: " + err.message));
+  }
+};
 
 function renderNotifSettings() {
   const status = $("notif-status"), btn = $("btn-notif-toggle");
@@ -568,6 +608,7 @@ $("btn-notif-toggle").onclick = async () => {
 };
 
 buildTimeOptions("09:00");
+syncNagField();
 
 // App abierta: FCM no muestra nada solo, así que lo mostramos nosotros.
 if (messaging) {

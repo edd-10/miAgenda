@@ -242,3 +242,63 @@ test("users: sin sesión no hay acceso, y las preferencias no se pueden borrar d
   await assertFails(setDoc(doc(anon(), "users/alice"), { timeFormat: "24" }));
   await assertFails(deleteDoc(doc(alice(), "users/alice")));
 });
+
+/* ---------- insistencia ---------- */
+test("tasks: se puede crear con insistencia (nagMin) y la cadena vacía", async () => {
+  await assertSucceeds(setDoc(doc(alice(), "tasks/t1"), task({ nagMin: 10, nagAt: null, nagCount: 0 })));
+  await assertSucceeds(setDoc(doc(alice(), "tasks/t2"), task({ nagMin: 0 })));
+});
+
+const invalidNagCreates = {
+  "nagMin que no es una opción": { nagMin: 7 },
+  "nagMin que no es número": { nagMin: "10" },
+  "una cadena ya programada (nagAt)": { nagMin: 10, nagAt: 1760517600000 },
+  "nagCount distinto de cero": { nagMin: 10, nagCount: 1 },
+  "nagCount negativo": { nagMin: 10, nagCount: -1 },
+  "nagAt que no es número": { nagMin: 10, nagAt: "pronto" },
+};
+for (const [name, over] of Object.entries(invalidNagCreates)) {
+  test(`tasks: se rechaza crear con ${name}`, async () => {
+    await assertFails(setDoc(doc(alice(), "tasks/t1"), task(over)));
+  });
+}
+
+test("tasks: un pendiente anterior (sin campos de insistencia) sigue pudiéndose editar y completar", async () => {
+  await seedTask();
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { done: true, nagAt: null }));
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { nagMin: 15 }));
+});
+
+test("tasks: con una cadena en curso, el cliente puede cortarla y seguir editando", async () => {
+  await seedTask("t1", { notified: true, nagMin: 10, nagAt: 1760517600000, nagCount: 2 });
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { title: "Otro título" }));            // no toca la cadena
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { done: true, nagAt: null }));         // marcar como hecho
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { nagAt: null, nagCount: 0 }));        // reiniciarla al editar
+});
+
+test("tasks: el cliente no puede programar ni mover la cadena de insistencias", async () => {
+  await seedTask("t1", { notified: true, nagMin: 10, nagAt: 1760517600000, nagCount: 2 });
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { nagAt: 1760999999999 }));               // otra hora
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { nagCount: 5 }));                        // otro contador
+  await seedTask("t2", { notified: true });                                                       // sin cadena
+  await assertFails(updateDoc(doc(alice(), "tasks/t2"), { nagAt: 1760999999999 }));               // programar una de la nada
+});
+
+test("tasks: nagMin inválido al editar se rechaza", async () => {
+  await seedTask();
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { nagMin: 7 }));
+});
+
+/* ---------- users: máximo de insistencias ---------- */
+test("users: nagMax acepta 3, 5, 10 y 20, solo o junto con timeFormat", async () => {
+  for (const n of [3, 5, 10, 20]) await assertSucceeds(setDoc(doc(alice(), "users/alice"), { nagMax: n }));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), { timeFormat: "12", nagMax: 10 }));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), { nagMax: 20 }, { merge: true }));
+});
+
+test("users: se rechaza un nagMax fuera de las opciones o que no es número", async () => {
+  await assertFails(setDoc(doc(alice(), "users/alice"), { nagMax: 7 }));
+  await assertFails(setDoc(doc(alice(), "users/alice"), { nagMax: "5" }));
+  await assertFails(setDoc(doc(alice(), "users/alice"), { nagMax: 0 }));
+  await assertFails(setDoc(doc(alice(), "users/alice"), { nagMax: 1000 }));
+});

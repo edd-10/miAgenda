@@ -22,9 +22,9 @@ Cloudflare Worker ────────┘  cada minuto: busca recordatorios 
 |---|---|---|
 | `tasks` | auto-ID | `uid`, `title`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`), `remindMin`, `remindAt` (ms o `null`), `notified`, `done`, `createdAt` |
 | `tokens` | token FCM | `uid`, `ua`, `updatedAt` |
-| `users` | uid | `timeFormat` (`"12"` o `"24"`) |
+| `users` | uid | `timeFormat` (`"12"` o `"24"`), `nagMax` (3, 5, 10 o 20) |
 
-`notified` solo lo modifica el Worker; las reglas lo impiden al cliente.
+`notified` solo lo modifica el Worker; las reglas lo impiden al cliente. Los campos de insistencia son opcionales (los pendientes anteriores no los tienen): `nagMin` (0, 5, 10, 15 o 30 min), `nagAt` (hora de la siguiente insistencia, la programa el Worker) y `nagCount` (cuántas se han enviado). El cliente solo puede cortar la cadena (`nagAt: null`, `nagCount: 0`), nunca programarla.
 
 ## Requisitos
 
@@ -86,6 +86,17 @@ El botón ⚙ de la esquina abre la ventana de ajustes:
 - **Formato de hora:** 24 h o 12 h (a. m./p. m.). Se guarda **por cuenta** en `users/{uid}.timeFormat` para que el Worker escriba el aviso en ese formato. Los pendientes siguen guardándose siempre como `HH:MM` (24 h): solo cambia cómo se eligen y se muestran.
 - **Avisos:** activar o desactivar en este dispositivo.
 - **Cuenta:** correo y cerrar sesión.
+
+## Insistir hasta que lo hagas
+
+Cada pendiente puede tener "Insistir: cada 5/10/15/30 min". Tras el primer aviso, el Worker programa `nagAt` y repite la notificación ("Sigue pendiente (2 de 5)") hasta que:
+
+- lo marques como hecho, lo borres, o cambies la hora del aviso o el intervalo (se corta o reinicia la cadena), o
+- se alcance el máximo de repeticiones de la cuenta (Ajustes → Avisos; 5 por defecto).
+
+Cada insistencia se reserva de forma atómica y se envía a su hora exacta, igual que el primer aviso. Si el Worker estuvo caído, las insistencias atrasadas no salen en ráfaga: se envía una y la siguiente se ancla desde ese momento. Requiere el índice `(done, nagAt)`.
+
+Limitación: si se activa "Insistir" en un pendiente que ya había avisado, la cadena no arranca (solo el Worker puede programarla); se aplica a partir del siguiente aviso.
 
 ## Precisión de los avisos
 

@@ -8,7 +8,7 @@ service cloud.firestore {
 
     // Esquema de un pendiente. `notified` solo lo cambia el Worker (cuenta de servicio, que ignora las reglas).
     function validTask(d) {
-      return d.keys().hasOnly(['uid', 'title', 'date', 'time', 'remindMin', 'remindAt', 'notified', 'done', 'createdAt'])
+      return d.keys().hasOnly(['uid', 'title', 'date', 'time', 'remindMin', 'remindAt', 'notified', 'done', 'createdAt', 'nagMin', 'nagAt', 'nagCount'])
         && d.keys().hasAll(['uid', 'title', 'date', 'time', 'remindMin', 'remindAt', 'notified', 'done', 'createdAt'])
         && d.uid is string
         && d.title is string && d.title.size() >= 1 && d.title.size() <= 120
@@ -19,7 +19,11 @@ service cloud.firestore {
         && ((d.remindMin == -1) == (d.remindAt == null))
         && d.notified is bool
         && d.done is bool
-        && d.createdAt is timestamp;
+        && d.createdAt is timestamp
+        // Insistencia (opcional: los pendientes anteriores no tienen estos campos).
+        && d.get('nagMin', 0) in [0, 5, 10, 15, 30]
+        && (d.get('nagAt', null) == null || d.get('nagAt', null) is int)
+        && d.get('nagCount', 0) is int && d.get('nagCount', 0) >= 0;
     }
 
     // Cada usuario solo ve y modifica sus propios pendientes.
@@ -29,7 +33,9 @@ service cloud.firestore {
                     && request.resource.data.uid == request.auth.uid
                     && validTask(request.resource.data)
                     && request.resource.data.notified == false
-                    && request.resource.data.createdAt == request.time;
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.get('nagAt', null) == null
+                    && request.resource.data.get('nagCount', 0) == 0;
       allow update: if signedIn()
                     && resource.data.uid == request.auth.uid
                     && request.resource.data.uid == request.auth.uid
@@ -39,16 +45,23 @@ service cloud.firestore {
                     && (request.resource.data.notified == resource.data.notified
                         || (request.resource.data.notified == false
                             && request.resource.data.remindAt != resource.data.remindAt))
-                    && request.resource.data.createdAt == resource.data.createdAt;
+                    && request.resource.data.createdAt == resource.data.createdAt
+                    // La cadena de insistencias la programa el Worker: el cliente solo puede cortarla (nagAt null, nagCount 0).
+                    && (request.resource.data.get('nagAt', null) == null
+                        || request.resource.data.get('nagAt', null) == resource.data.get('nagAt', null))
+                    && (request.resource.data.get('nagCount', 0) == 0
+                        || request.resource.data.get('nagCount', 0) == resource.data.get('nagCount', 0));
       allow delete: if signedIn() && resource.data.uid == request.auth.uid;
     }
 
-    // Preferencias por cuenta (por ahora solo el formato de hora; el Worker lo lee con la cuenta de servicio).
+    // Preferencias por cuenta: formato de hora y máximo de insistencias (el Worker las lee con la cuenta de servicio).
     match /users/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
       allow create, update: if signedIn() && request.auth.uid == uid
-                            && request.resource.data.keys().hasOnly(['timeFormat'])
-                            && request.resource.data.timeFormat in ['12', '24'];
+                            && request.resource.data.keys().hasOnly(['timeFormat', 'nagMax'])
+                            && request.resource.data.size() >= 1
+                            && request.resource.data.get('timeFormat', '24') in ['12', '24']
+                            && request.resource.data.get('nagMax', 5) in [3, 5, 10, 20];
     }
 
     // Tokens de notificación: solo se escriben/borran los propios (el Worker los lee con cuenta de servicio).
