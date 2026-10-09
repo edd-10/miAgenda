@@ -22,7 +22,7 @@ Cloudflare Worker ────────┘  cada minuto: busca recordatorios 
 |---|---|---|
 | `tasks` | auto-ID | `uid`, `title`, `date` (`YYYY-MM-DD`), `time` (`HH:MM`), `remindMin`, `remindAt` (ms o `null`), `notified`, `done`, `createdAt` |
 | `tokens` | token FCM | `uid`, `ua`, `updatedAt` |
-| `users` | uid | `timeFormat` (`"12"` o `"24"`), `nagMax` (3, 5, 10 o 20) |
+| `users` | uid | `timeFormat` (`"12"`/`"24"`), `nagMax` (3, 5, 10, 20), `snoozeMin` (5…60), y para los resúmenes: `tz` (zona horaria IANA), `digestMorning` y `digestEvening` (`"HH:MM"` o `null`), `nextDigestAt` (próximo instante, ms UTC) |
 
 `notified` solo lo modifica el Worker; las reglas lo impiden al cliente. Los campos de insistencia son opcionales (los pendientes anteriores no los tienen): `nagMin` (0, 5, 10, 15 o 30 min), `nagAt` (hora de la siguiente insistencia, la programa el Worker) y `nagCount` (cuántas se han enviado). El cliente solo puede cortar la cadena (`nagAt: null`, `nagCount: 0`), nunca programarla.
 
@@ -86,6 +86,21 @@ El botón ⚙ de la esquina abre la ventana de ajustes:
 - **Formato de hora:** 24 h o 12 h (a. m./p. m.). Se guarda **por cuenta** en `users/{uid}.timeFormat` para que el Worker escriba el aviso en ese formato. Los pendientes siguen guardándose siempre como `HH:MM` (24 h): solo cambia cómo se eligen y se muestran.
 - **Avisos:** activar o desactivar en este dispositivo.
 - **Cuenta:** correo y cerrar sesión.
+
+## Resumen de la mañana y cierre del día
+
+En Ajustes → "Resúmenes diarios" se activan dos avisos diarios, a la hora que elijas (mañana: 05:00–11:30; noche: 17:00–23:30, cada 30 min):
+
+- **☀️ Resumen de la mañana:** *"Hoy tienes 3 pendientes: 09:00 Reunión · 13:30 Comer · 18:00 Gimnasio"*.
+- **🌙 Cierre del día:** *"Te quedaron 2 sin hacer: Reunión, Gimnasio"*, con el botón **Mover a mañana**, que pasa de golpe todos los pendientes sin hacer del día al siguiente (misma hora; el aviso se reprograma y las insistencias se reinician). Se confirma con una notificación.
+- Si no hay nada pendiente no se manda nada. Tocar un resumen abre la app en "Hoy".
+
+Cómo funciona:
+
+- **Zona horaria.** El Worker corre en UTC, así que cada cuenta guarda su zona (`tz`, la del dispositivo; se resincroniza una vez al abrir la app) y `nextDigestAt`, el próximo instante exacto. `public/digest.js` calcula "las 8:00 de tu zona" con su horario de verano y lo usan tanto la app como el Worker (`worker/src/digests.mjs` lo importa).
+- **Programación.** Cada minuto el Worker busca a quien tenga `nextDigestAt` dentro de los próximos ~75 s (una consulta; los demás no cuestan lecturas), lo reserva de forma atómica adelantando `nextDigestAt` (dos ejecuciones no duplican), espera la hora exacta, cuenta los pendientes sin hacer de **ese día en tu zona** y manda un mensaje solo de datos.
+- **Caídas.** Un resumen con más de 30 min de retraso se descarta (un "buenos días" a media tarde estorba) y se reprograma desde ahora: tras una caída larga no llegan resúmenes atrasados.
+- **Mover a mañana** lo hace el service worker con tu sesión y las mismas reglas de seguridad que la app (una escritura atómica `commit`), igual que Hecho/Posponer.
 
 ## Responder desde la notificación
 

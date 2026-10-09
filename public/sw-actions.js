@@ -23,6 +23,14 @@
   // Opciones de showNotification a partir de los datos que manda el Worker.
   function notificationOptions(d) {
     const opts = { body: d.body || "", icon: "/icon-192.png", requireInteraction: true };
+    // Resúmenes: una sola notificación de cada tipo (la de hoy reemplaza a la de ayer si sigue ahí).
+    if (d.kind === "digest-morning" || d.kind === "digest-evening") {
+      opts.tag = d.kind;
+      opts.renotify = true;
+      opts.data = { kind: d.kind, date: d.date, title: d.title };
+      if (d.kind === "digest-evening" && /^\d{4}-\d{2}-\d{2}$/.test(d.date || "")) opts.actions = [{ action: "move", title: "Mover a mañana" }];
+      return opts;
+    }
     if (d.taskId) {
       opts.tag = d.taskId;            // una insistencia reemplaza a la anterior del mismo pendiente
       opts.renotify = true;           // pero vuelve a sonar/vibrar
@@ -73,8 +81,52 @@
   const nul = () => ({ nullValue: null });
   const FS = (pid) => `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents`;
 
-  // Devuelve "done" | "snoozed" | "already-done" | "gone"; lanza error si no se pudo.
+  // Mueve a mañana todos los pendientes sin hacer de `data.date` (el cierre del día): nueva fecha, el aviso se reprograma a la misma
+  // hora de mañana, y la cadena de insistencias se reinicia. Una sola escritura atómica (commit), con las reglas del usuario.
+  async function moveToTomorrow(data, deps) {
+    const date = data && data.date;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || "")) throw new Error("fecha-invalida");
+    const record = await (deps.readAuthRecord ? deps.readAuthRecord(deps.apiKey) : readAuthRecordFromIndexedDB(deps.apiKey));
+    const token = await getIdToken(record, deps);
+    if (!record.uid) throw new Error("sin-sesion");
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const base = FS(deps.projectId);
+
+    const eq = (field, value) => ({ fieldFilter: { field: { fieldPath: field }, op: "EQUAL", value } });
+    const q = await deps.fetch(`${base}:runQuery`, {
+      method: "POST", headers,
+      body: JSON.stringify({ structuredQuery: {
+        from: [{ collectionId: "tasks" }],
+        where: { compositeFilter: { op: "AND", filters: [eq("uid", { stringValue: record.uid }), eq("date", { stringValue: date }), eq("done", { booleanValue: false })] } },
+        limit: 200,
+      } }),
+    });
+    if (!q.ok) throw new Error(`query-${q.status}`);
+    const docs = (await q.json()).filter((r) => r.document).map((r) => r.document);
+    if (!docs.length) return "moved:0";
+
+    const [y, m, d] = date.split("-").map(Number);
+    const t = new Date(y, m - 1, d + 1);                               // el día siguiente en el calendario
+    const pad = (n) => String(n).padStart(2, "0");
+    const tomorrow = `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`;
+
+    const writes = docs.map((doc) => {
+      const f = doc.fields || {};
+      const [hh, mm] = String(f.time && f.time.stringValue || "00:00").split(":").map(Number);
+      const remindMin = Number(f.remindMin && f.remindMin.integerValue);
+      const remindAt = remindMin >= 0 ? new Date(t.getFullYear(), t.getMonth(), t.getDate(), hh, mm).getTime() - remindMin * 60_000 : null;
+      const fields = { date: { stringValue: tomorrow }, remindAt: remindAt === null ? nul() : { integerValue: String(remindAt) } };
+      if (remindAt !== null) Object.assign(fields, { notified: { booleanValue: false }, nagAt: nul(), nagCount: { integerValue: "0" } });
+      return { update: { name: doc.name, fields }, updateMask: { fieldPaths: Object.keys(fields) }, currentDocument: { exists: true } };
+    });
+    const res = await deps.fetch(`${base}:commit`, { method: "POST", headers, body: JSON.stringify({ writes }) });
+    if (!res.ok) throw new Error(`commit-${res.status}`);
+    return `moved:${writes.length}`;
+  }
+
+  // Devuelve "done" | "snoozed" | "already-done" | "gone" | "moved:N"; lanza error si no se pudo.
   async function run(action, data, deps) {
+    if (action === "move") return moveToTomorrow(data, deps);
     if (!data || !data.taskId) throw new Error("sin-tarea");
     if (action !== "done" && action !== "snooze") throw new Error("accion-desconocida");
 

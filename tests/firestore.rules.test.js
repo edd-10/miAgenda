@@ -342,3 +342,54 @@ test("posponer no permite dejar remindAt en null con un remindMin de aviso (la r
   await seedTask("t1", { notified: true });
   await assertFails(updateDoc(doc(alice(), "tasks/t1"), { remindAt: null, notified: false }));
 });
+
+/* ---------- users: resúmenes (mañana / cierre del día) ---------- */
+const digestDoc = (over = {}) => ({ tz: "America/Mexico_City", digestMorning: "08:00", digestEvening: "21:00", nextDigestAt: 1791540000000, ...over });
+
+test("users: se puede activar y configurar el resumen de la mañana y el cierre del día", async () => {
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), digestDoc()));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), digestDoc({ digestEvening: null })));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), digestDoc({ digestMorning: null, digestEvening: null, nextDigestAt: null })));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), { timeFormat: "12", nagMax: 10, snoozeMin: 30, ...digestDoc() }));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), { digestMorning: "05:30" }, { merge: true }));
+});
+
+test("users: las horas de los resúmenes deben ser HH:MM válidas (o null)", async () => {
+  for (const bad of ["25:00", "8:00", "08:60", "08:0", "ocho", "", "24:00", 800, true]) {
+    await assertFails(setDoc(doc(alice(), "users/alice"), digestDoc({ digestMorning: bad })));
+    await assertFails(setDoc(doc(alice(), "users/alice"), digestDoc({ digestEvening: bad })));
+  }
+});
+
+test("users: zona horaria y nextDigestAt con tipos correctos", async () => {
+  await assertFails(setDoc(doc(alice(), "users/alice"), digestDoc({ tz: 5 })));
+  await assertFails(setDoc(doc(alice(), "users/alice"), digestDoc({ tz: "x".repeat(65) })));
+  await assertSucceeds(setDoc(doc(alice(), "users/alice"), digestDoc({ tz: "x".repeat(64) })));
+  await assertFails(setDoc(doc(alice(), "users/alice"), digestDoc({ nextDigestAt: "mañana" })));
+  await assertFails(setDoc(doc(alice(), "users/alice"), digestDoc({ nextDigestAt: 1.5 })));
+});
+
+test("users: los resúmenes siguen sin admitir campos desconocidos ni acceso ajeno", async () => {
+  await assertFails(setDoc(doc(alice(), "users/alice"), digestDoc({ digestNoon: "12:00" })));
+  await seed("users/alice", digestDoc());
+  await assertFails(getDoc(doc(bob(), "users/alice")));
+  await assertFails(setDoc(doc(bob(), "users/alice"), digestDoc({ digestMorning: null })));
+  await assertFails(setDoc(doc(anon(), "users/alice"), digestDoc()));
+});
+
+/* ---------- lo que escribe el service worker al "Mover a mañana" ---------- */
+test("notificación → Mover a mañana: nueva fecha, nuevo remindAt, notified false y la cadena reiniciada", async () => {
+  await seedTask("t1", { notified: true, nagMin: 10, nagAt: 1760517600000, nagCount: 2 });
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { date: "2026-10-16", remindAt: 1761000000000, notified: false, nagAt: null, nagCount: 0 }));
+});
+
+test("notificación → Mover a mañana un pendiente sin aviso: solo cambia la fecha (remindAt sigue null)", async () => {
+  await seedTask("t1", { remindMin: -1, remindAt: null });
+  await assertSucceeds(updateDoc(doc(alice(), "tasks/t1"), { date: "2026-10-16", remindAt: null }));
+});
+
+test("mover una tarea de otra cuenta se rechaza, y una fecha mal formada también", async () => {
+  await seedTask("t1");
+  await assertFails(updateDoc(doc(bob(), "tasks/t1"), { date: "2026-10-16" }));
+  await assertFails(updateDoc(doc(alice(), "tasks/t1"), { date: "mañana" }));
+});

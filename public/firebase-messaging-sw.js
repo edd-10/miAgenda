@@ -21,35 +21,50 @@ messaging.onBackgroundMessage((payload) => {
 self.addEventListener("notificationclick", (event) => {
   const data = event.notification.data || {};
   event.notification.close();
-  if (event.action === "done" || event.action === "snooze") {
+  if (event.action === "done" || event.action === "snooze" || event.action === "move") {
     event.waitUntil(runAction(event.action, data));
     return;
   }
-  event.waitUntil(openApp());
+  // Un resumen abre directamente la vista "Hoy".
+  event.waitUntil(openApp(data.kind && data.kind.startsWith("digest") ? "/?view=today" : "/"));
 });
 
 // Hecho / Posponer sin abrir la app. Si algo falla (sin sesión, sin red…) se avisa para que se haga desde la app.
 async function runAction(action, data) {
   try {
-    return await SWActions.run(action, data, {
+    const result = await SWActions.run(action, data, {
       projectId: firebaseConfig.projectId,
       apiKey: firebaseConfig.apiKey,
       fetch: (...a) => fetch(...a),
       now: () => Date.now(),
     });
+    // Mover a mañana cambia muchos pendientes de golpe: se confirma para que no quede la duda.
+    if (typeof result === "string" && result.startsWith("moved:")) {
+      const n = Number(result.slice(6));
+      await self.registration.showNotification(n ? "Movidos a mañana" : "No había pendientes que mover", {
+        body: n ? `${n} ${n === 1 ? "pendiente pasó" : "pendientes pasaron"} a mañana.` : "Ya estaba todo hecho o movido.",
+        icon: "/icon-192.png",
+        tag: "digest-evening",
+      });
+    }
+    return result;
   } catch (e) {
     console.warn("No se pudo completar la acción de la notificación:", e);
     await self.registration.showNotification("No se pudo completar la acción", {
-      body: `Abre Mi Agenda y gestiona «${data.title || "el pendiente"}» desde la app.`,
+      body: data.kind === "digest-evening" ? "Abre Mi Agenda y mueve los pendientes desde la app." : `Abre Mi Agenda y gestiona «${data.title || "el pendiente"}» desde la app.`,
       icon: "/icon-192.png",
       tag: "err-" + (data.taskId || "x"),
     });
   }
 }
 
-function openApp() {
+function openApp(url = "/") {
   return clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
-    for (const c of list) if ("focus" in c) return c.focus();
-    return clients.openWindow("/");
+    for (const c of list) {
+      // Si ya hay una ventana y se pide otra vista (el resumen abre "Hoy"), se lleva ahí; si no, solo se enfoca.
+      if (url !== "/" && "navigate" in c) return c.navigate(url).then((w) => (w || c).focus());
+      if ("focus" in c) return c.focus();
+    }
+    return clients.openWindow(url);
   });
 }

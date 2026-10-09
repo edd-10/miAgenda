@@ -17,16 +17,21 @@ export const CONFIG = {
   SNOOZE_DEFAULT: 10,             // minutos que pospone el botón "Posponer" si la cuenta no eligió otro (users/{uid}.snoozeMin)
   TTL_REMINDER_S: 86_400,         // cuánto guarda el servicio push un aviso si el dispositivo está apagado (1 día)
   TTL_NAG_MAX_S: 3_600,           // una insistencia caduca antes de que llegue la siguiente (y nunca más de 1 h)
+  DIGEST_BATCH: 10,               // máx. de usuarios con resumen por ejecución
+  DIGEST_STALE_MS: 30 * 60_000,   // un resumen que llega con más de 30 min de retraso se descarta (un "buenos días" a media tarde estorba)
+  DIGEST_LISTED: 3,               // cuántos pendientes se nombran en el texto del resumen
+  DIGEST_MAX_TASKS: 50,           // máx. de pendientes que se leen para contar
+  DIGEST_TTL_S: 3_600,            // un resumen caduca en 1 h si el dispositivo está apagado
 };
 const SNOOZE_OPTIONS = [5, 10, 15, 30, 60];
 
-const fsBase = (pid) => `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents`;
-const str = (f) => f?.stringValue;
-const int = (f) => (f?.integerValue !== undefined ? Number(f.integerValue) : f?.doubleValue);
-const idOf = (doc) => doc.name.split("/").pop();
+export const fsBase = (pid) => `https://firestore.googleapis.com/v1/projects/${pid}/databases/(default)/documents`;
+export const str = (f) => f?.stringValue;
+export const int = (f) => (f?.integerValue !== undefined ? Number(f.integerValue) : f?.doubleValue);
+export const idOf = (doc) => doc.name.split("/").pop();
 
 // Valores de campo de la API REST de Firestore.
-const FV = {
+export const FV = {
   bool: (v) => ({ booleanValue: v }),
   int: (v) => ({ integerValue: String(v) }),
   nul: () => ({ nullValue: null }),
@@ -40,7 +45,7 @@ export function formatTime(hhmm, fmt) {
   return `${h % 12 || 12}:${m[2]} ${h < 12 ? "a. m." : "p. m."}`;
 }
 
-function makeCtx(env, deps) {
+export function makeCtx(env, deps) {
   const sa = JSON.parse(env.SERVICE_ACCOUNT);
   return {
     sa,
@@ -55,11 +60,11 @@ function makeCtx(env, deps) {
   };
 }
 
-const headers = (c, extra = {}) => ({ authorization: `Bearer ${c.token}`, ...extra });
-const sleepUntil = async (c, at) => { const ms = at - c.now(); if (ms > 0) await c.sleep(ms); };
+export const headers = (c, extra = {}) => ({ authorization: `Bearer ${c.token}`, ...extra });
+export const sleepUntil = async (c, at) => { const ms = at - c.now(); if (ms > 0) await c.sleep(ms); };
 
 /* ---------- Firestore (REST) ---------- */
-async function runQuery(c, structuredQuery) {
+export async function runQuery(c, structuredQuery) {
   const res = await c.fetch(`${fsBase(c.pid)}:runQuery`, {
     method: "POST",
     headers: headers(c, { "content-type": "application/json" }),
@@ -69,24 +74,26 @@ async function runQuery(c, structuredQuery) {
   return (await res.json()).filter((r) => r.document).map((r) => r.document);
 }
 
-// Escribe `fields` en la tarea solo si no ha cambiado desde `updateTime` (condición atómica).
-const patchTask = (c, id, fields, updateTime) => {
+// Escribe `fields` en un documento solo si no ha cambiado desde `updateTime` (condición atómica).
+export const patchDoc = (c, collection, id, fields, updateTime) => {
   const mask = Object.keys(fields).map((k) => `updateMask.fieldPaths=${k}`).join("&");
-  return c.fetch(`${fsBase(c.pid)}/tasks/${id}?${mask}&currentDocument.updateTime=${encodeURIComponent(updateTime)}`, {
+  return c.fetch(`${fsBase(c.pid)}/${collection}/${encodeURIComponent(id)}?${mask}&currentDocument.updateTime=${encodeURIComponent(updateTime)}`, {
     method: "PATCH",
     headers: headers(c, { "content-type": "application/json" }),
     body: JSON.stringify({ fields }),
   });
 };
+const patchTask = (c, id, fields, updateTime) => patchDoc(c, "tasks", id, fields, updateTime);
 
-// Reserva la tarea escribiendo `fields` con la condición de que no haya cambiado desde que se leyó: si dos
+// Reserva el documento escribiendo `fields` con la condición de que no haya cambiado desde que se leyó: si dos
 // ejecuciones coinciden, solo una lo consigue. Devuelve el updateTime nuevo, o null si no se pudo.
-async function claimTask(c, doc, fields) {
-  const res = await patchTask(c, idOf(doc), fields, doc.updateTime);
+export async function claimDoc(c, collection, doc, fields) {
+  const res = await patchDoc(c, collection, idOf(doc), fields, doc.updateTime);
   if (res.ok) return (await res.json()).updateTime;
   if (![400, 404, 409].includes(res.status)) c.log("No se pudo reservar el aviso:", res.status, await res.text());
-  return null; // otra ejecución la tomó, el usuario la editó o la borró
+  return null; // otra ejecución lo tomó, el usuario lo editó o lo borró
 }
+const claimTask = (c, doc, fields) => claimDoc(c, "tasks", doc, fields);
 
 // Deshace la reserva (solo si la tarea sigue como la dejamos).
 async function releaseTask(c, id, fields, updateTime) {
@@ -124,31 +131,14 @@ async function readPrefs(c, uid) {
 }
 
 /* ---------- Envío (FCM) ---------- */
+// Manda un mensaje solo de datos a un dispositivo (sin "notification": el service worker arma la notificación, con sus botones).
 // Devuelve "ok", "gone" (token inválido, ya borrado), "retry" (fallo temporal) o "failed" (permanente).
-async function sendToDevice(c, deviceToken, task) {
-  const t = formatTime(task.time, task.timeFormat);
-  const body = task.repeat ? `Sigue pendiente (${task.repeat.n} de ${task.repeat.max}) · ${t}`
-    : task.remindMin > 0 ? `Es a las ${t}` : `Ahora · ${t}`;
-  // Una insistencia caduca antes de que llegue la siguiente, para que un teléfono apagado no reciba un montón al encender.
-  const ttl = task.repeat
-    ? Math.min(c.config.TTL_NAG_MAX_S, Math.max(60, Math.round(task.repeat.stepMs / 1000)))
-    : c.config.TTL_REMINDER_S;
+export async function sendData(c, deviceToken, data, ttl) {
   const res = await c.fetch(`https://fcm.googleapis.com/v1/projects/${c.pid}/messages:send`, {
     method: "POST",
     headers: headers(c, { "content-type": "application/json" }),
     body: JSON.stringify({
-      message: {
-        token: deviceToken,
-        // Solo datos (sin "notification"): el service worker arma la notificación para poder ponerle los botones Hecho/Posponer.
-        data: {
-          title: `⏰ ${task.title}`,
-          body,
-          taskId: task.id,
-          snoozeMin: String(task.snoozeMin),
-          kind: task.repeat ? "nag" : "reminder",
-        },
-        webpush: { headers: { Urgency: "high", TTL: String(ttl) } },
-      },
+      message: { token: deviceToken, data, webpush: { headers: { Urgency: "high", TTL: String(ttl) } } },
     }),
   });
   if (res.ok) return "ok";
@@ -165,10 +155,33 @@ async function sendToDevice(c, deviceToken, task) {
 }
 
 // Envía a todos los dispositivos. Devuelve { results, delivered, retry } (retry: fallo temporal y nada llegó).
-async function sendAll(c, deviceTokens, info) {
-  const results = await Promise.all(deviceTokens.map((t) => sendToDevice(c, t, info)));
+export async function deliver(c, deviceTokens, data, ttl) {
+  const results = await Promise.all(deviceTokens.map((t) => sendData(c, t, data, ttl)));
   const delivered = results.includes("ok");
   return { results, delivered, retry: !delivered && results.includes("retry") };
+}
+
+// Mensaje de un aviso o de una insistencia de un pendiente.
+function reminderMessage(c, task) {
+  const t = formatTime(task.time, task.timeFormat);
+  const body = task.repeat ? `Sigue pendiente (${task.repeat.n} de ${task.repeat.max}) · ${t}`
+    : task.remindMin > 0 ? `Es a las ${t}` : `Ahora · ${t}`;
+  // Una insistencia caduca antes de que llegue la siguiente, para que un teléfono apagado no reciba un montón al encender.
+  const ttl = task.repeat
+    ? Math.min(c.config.TTL_NAG_MAX_S, Math.max(60, Math.round(task.repeat.stepMs / 1000)))
+    : c.config.TTL_REMINDER_S;
+  const data = { title: `⏰ ${task.title}`, body, taskId: task.id, snoozeMin: String(task.snoozeMin), kind: task.repeat ? "nag" : "reminder" };
+  return { data, ttl };
+}
+const sendAll = (c, deviceTokens, info) => { const { data, ttl } = reminderMessage(c, info); return deliver(c, deviceTokens, data, ttl); };
+
+// Tokens de los dispositivos de un usuario.
+export async function listTokens(c, uid) {
+  const docs = await runQuery(c, {
+    from: [{ collectionId: "tokens" }],
+    where: { fieldFilter: { field: { fieldPath: "uid" }, op: "EQUAL", value: { stringValue: uid } } },
+  });
+  return docs.map(idOf);
 }
 
 const infoOf = (id, fields, prefs, repeat) => ({
@@ -321,12 +334,7 @@ export async function processReminders(env, deps = {}) {
   // Una sola consulta de tokens por usuario en cada ejecución.
   const tokenCache = new Map();
   const tokensFor = (uid) => {
-    if (!tokenCache.has(uid)) {
-      tokenCache.set(uid, runQuery(c, {
-        from: [{ collectionId: "tokens" }],
-        where: { fieldFilter: { field: { fieldPath: "uid" }, op: "EQUAL", value: { stringValue: uid } } },
-      }).then((docs) => docs.map(idOf)));
-    }
+    if (!tokenCache.has(uid)) tokenCache.set(uid, listTokens(c, uid));
     return tokenCache.get(uid);
   };
 
