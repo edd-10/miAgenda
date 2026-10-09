@@ -87,6 +87,18 @@ El botón ⚙ de la esquina abre la ventana de ajustes:
 - **Avisos:** activar o desactivar en este dispositivo.
 - **Cuenta:** correo y cerrar sesión.
 
+## Agregar rápido (lenguaje natural)
+
+La barra de arriba entiende frases en español: *"dentista el viernes 5pm avisar 30 min antes"*, *"recuérdame llamar a mamá mañana a las 9"*, *"en 2 horas sacar la pizza"*, *"pagar renta el 15 de noviembre insistir cada 10 min"*. Mientras escribes muestra lo que entendió (fecha, hora, aviso, insistencia) para corregirlo antes de agregar; Enter agrega y el aviso trae "Deshacer".
+
+Lo interpreta `public/nl.js`, una función pura y local (sin IA, sin red ni costo): `NL.parse(texto, ahora)`. Reglas importantes:
+
+- **Sin hora** no se inventa una: se abre el formulario del día con el título puesto para que elijas la hora.
+- **"a las 5"** sin más se toma como p. m. de 1 a 6 y como a. m. de 7 a 11 (y lo avisa en la vista previa); con a. m./p. m., "de la tarde/noche…" o 24 horas no se supone nada.
+- **Solo hora** (sin día): hoy si aún no pasa, mañana si ya pasó. **Día de la semana**: el más cercano (el de la próxima semana si hoy ya pasó esa hora).
+- **Aviso** e **insistencia** se ajustan a las opciones de la app (si pides 10 min antes se usa 15, la más cercana).
+- Los verbos del inicio ("recuérdame", "avísame", "agrega"…) se quitan del título; "Aviso de pago" o "Ponche" se conservan.
+
 ## Insistir hasta que lo hagas
 
 Cada pendiente puede tener "Insistir: cada 5/10/15/30 min". Tras el primer aviso, el Worker programa `nagAt` y repite la notificación ("Sigue pendiente (2 de 5)") hasta que:

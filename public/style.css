@@ -95,6 +95,14 @@ main { max-width: 1100px; margin: 0 auto; padding-bottom: 24px; }
 .tab[aria-current="page"] { color: var(--accent-text); border-bottom-color: var(--primary); }
 .tab:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; border-radius: 6px; }
 
+.quick { display: flex; gap: 8px; max-width: 1100px; margin: 0 auto 6px; }
+.quick input {
+  flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+.quick input:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.quick .btn { width: 44px; padding: 0; font-size: 22px; line-height: 1; }
+.muted.quick-preview { max-width: 1100px; margin: 0 auto 8px; }
+
 .today-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 0; }
 .today-head h2 { margin: 0; font-size: 20px; }
 .muted { color: var(--muted); margin: 2px 0 0; font-size: 14px; }

@@ -27,6 +27,8 @@ const pad = (n) => String(n).padStart(2, "0");
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const fmtTime = (t) => Format.formatTime(t, timeFormat);
+const fmtDay = (key) => parseKey(key).toLocaleDateString("es-MX", { weekday: "short", day: "numeric", month: "short" }).replace(",", "");
+const REMIND_LABELS = { "-1": "sin aviso", 0: "aviso a la hora", 5: "aviso 5 min antes", 15: "aviso 15 min antes", 30: "aviso 30 min antes", 60: "aviso 1 hora antes", 1440: "aviso 1 día antes" };
 function loadTimeFormat() {
   try { return localStorage.getItem("timeFormat") === "12" ? "12" : "24"; } catch (_) { return "24"; }
 }
@@ -304,6 +306,22 @@ async function flushDeletes() {
 }
 window.addEventListener("pagehide", flushDeletes);
 
+// Instante absoluto (ms UTC) del aviso: fecha y hora locales menos la anticipación; null si no hay aviso.
+function remindAtOf(date, time, remindMin) {
+  const [y, m, d] = date.split("-").map(Number);
+  const [hh, mm] = time.split(":").map(Number);
+  const when = new Date(y, m - 1, d, hh, mm).getTime();
+  return remindMin >= 0 ? when - remindMin * 60000 : null;
+}
+
+function addTask({ title, date, time, remindMin, nagMin }) {
+  return db.collection("tasks").add({
+    uid: user.uid, title, date, time,
+    remindMin, remindAt: remindAtOf(date, time, remindMin), notified: false, done: false, nagMin, nagAt: null, nagCount: 0,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
 function startEdit(t) {
   editingId = t.id;
   $("f-title").value = t.title;
@@ -351,19 +369,10 @@ $("form").onsubmit = async (e) => {
   const date = editingId ? $("f-date").value : selectedDate;
   if (!title || !time || !date) return;
 
-  const [y, m, d] = date.split("-").map(Number);
-  const [hh, mm] = time.split(":").map(Number);
-  const when = new Date(y, m - 1, d, hh, mm).getTime();       // instante absoluto (ms UTC)
-  const remindAt = remindMin >= 0 ? when - remindMin * 60000 : null;
-
-  if (editingId) return saveEdit({ title, date, time, remindMin, remindAt, nagMin });
+  if (editingId) return saveEdit({ title, date, time, remindMin, remindAt: remindAtOf(date, time, remindMin), nagMin });
 
   try {
-    await db.collection("tasks").add({
-      uid: user.uid, title, date, time,
-      remindMin, remindAt, notified: false, done: false, nagMin, nagAt: null, nagCount: 0,
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-    });
+    await addTask({ title, date, time, remindMin, nagMin });
     $("f-title").value = "";
     if (remindMin >= 0 && messaging && Notification.permission !== "granted") {
       toast("Activa los avisos en Ajustes (⚙) para recibir el recordatorio");
@@ -388,6 +397,79 @@ async function saveEdit(data) {
     toast("No se pudo guardar: " + err.message);
   }
 }
+
+/* ---------- Agregar rápido (lenguaje natural) ---------- */
+// Si la fecha cae fuera de lo que muestra el calendario, se lleva la vista a ese mes para que se vea el pendiente.
+function ensureVisible(dateKey) {
+  if (mode !== "month") return;
+  const start = gridStart(), end = addDays(start, 41);
+  const d = parseKey(dateKey);
+  if (d >= start && d <= end) return;
+  view = new Date(d.getFullYear(), d.getMonth(), 1);
+  subscribeTasks();
+  render();
+}
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+
+// Lo que se entendió de lo escrito, para corregirlo antes de agregar.
+function describeQuick(r) {
+  const parts = [`📌 ${r.title}`, `📅 ${fmtDay(r.date || keyOf(new Date()))}`];
+  parts.push(r.time ? `🕒 ${fmtTime(r.time)}` : "🕒 sin hora: se abrirá el formulario para elegirla");
+  parts.push(`🔔 ${REMIND_LABELS[r.remindMin ?? 0]}`);
+  if (r.nagMin) parts.push(`🔁 insistir cada ${r.nagMin} min`);
+  const notes = [];
+  if (r.notes.includes("assumed-pm")) notes.push("supuse p. m.");
+  if (r.notes.includes("assumed-am")) notes.push("supuse a. m.");
+  if (r.notes.includes("tomorrow-assumed")) notes.push("esa hora ya pasó hoy, va para mañana");
+  if (r.notes.includes("invalid-date")) notes.push("⚠ esa fecha no existe");
+  if (r.notes.includes("past")) notes.push("⚠ ya pasó");
+  const adj = r.notes.find((n) => n.startsWith("remind-adjusted:"));
+  if (adj) notes.push(`aviso ajustado a la opción más cercana (pediste ${adj.split(":")[1].split("->")[0]} min)`);
+  return parts.join(" · ") + (notes.length ? `  (${notes.join("; ")})` : "");
+}
+
+function renderQuickPreview() {
+  const text = $("quick-input").value.trim();
+  const el = $("quick-preview");
+  if (!text) { el.textContent = ""; return; }
+  const r = NL.parse(text, new Date());
+  el.textContent = r.title ? describeQuick(r) : "Escribe qué quieres recordar y, si quieres, cuándo.";
+}
+$("quick-input").oninput = renderQuickPreview;
+$("quick-input").onkeydown = (e) => { if (e.key === "Escape") { e.target.value = ""; renderQuickPreview(); } };
+
+$("quick").onsubmit = async (e) => {
+  e.preventDefault();
+  const r = NL.parse($("quick-input").value, new Date());
+  if (!r.title) { renderQuickPreview(); return; }
+  const date = r.date || keyOf(new Date());
+  const remindMin = r.remindMin ?? 0;
+  const nagMin = remindMin >= 0 ? r.nagMin ?? 0 : 0;
+
+  if (!r.time) {          // sin hora no se inventa una: se completa en el formulario de siempre
+    ensureVisible(date);
+    openDay(date);
+    $("f-title").value = r.title;
+    $("f-remind").value = String(remindMin);
+    $("f-nag").value = String(nagMin);
+    syncNagField();
+    $("quick-input").value = ""; renderQuickPreview();
+    $("f-hour").focus();
+    toast("Falta la hora: elígela y pulsa Agregar");
+    return;
+  }
+  try {
+    const ref = await addTask({ title: r.title, date, time: r.time, remindMin, nagMin });
+    $("quick-input").value = ""; renderQuickPreview();
+    ensureVisible(date);
+    toast(`Agregado: ${r.title} · ${fmtDay(date)} · ${fmtTime(r.time)}`, {
+      label: "Deshacer", ms: UNDO_MS,
+      onClick: () => ref.delete().catch((err) => toast("No se pudo deshacer: " + err.message)),
+    });
+  } catch (err) {
+    toast("No se pudo guardar: " + err.message);
+  }
+};
 
 /* ---------- Notificaciones push ---------- */
 // iOS solo permite push en la app instalada en la pantalla de inicio (iOS 16.4+): en Safari normal no hay Notification.
