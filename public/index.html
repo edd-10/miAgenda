@@ -104,6 +104,16 @@
             </select>
           </label>
         </div>
+        <label class="field" id="f-nag-row">Insistir
+          <select id="f-nag">
+            <option value="0">No insistir</option>
+            <option value="5">Cada 5 min</option>
+            <option value="10">Cada 10 min</option>
+            <option value="15">Cada 15 min</option>
+            <option value="30">Cada 30 min</option>
+          </select>
+        </label>
+        <p id="f-nag-hint" class="muted" role="status"></p>
         <div class="form-actions">
           <button id="f-submit" class="btn primary" type="submit">Agregar</button>
           <button id="f-cancel" class="btn" type="button" hidden>Cancelar</button>
@@ -148,6 +158,14 @@
         <h4 id="set-notif">Avisos</h4>
         <p id="notif-status" class="muted" role="status"></p>
         <button id="btn-notif-toggle" class="btn" type="button"></button>
+        <label class="field" for="set-nagmax">Máximo de repeticiones al insistir
+          <select id="set-nagmax">
+            <option value="3">3 veces</option>
+            <option value="5">5 veces</option>
+            <option value="10">10 veces</option>
+            <option value="20">20 veces</option>
+          </select>
+        </label>
       </section>
 
       <section class="set-section" aria-labelledby="set-account">

@@ -11,7 +11,7 @@ const PID = "demo";
 const ENV = { SERVICE_ACCOUNT: JSON.stringify({ project_id: PID, client_email: "w@demo.iam", private_key: "no-se-usa" }) };
 const T0 = Date.UTC(2026, 9, 8, 16, 30, 0) + 51_000;   // el cron corre al segundo :51
 
-const val = (v) => (typeof v === "boolean" ? { booleanValue: v } : typeof v === "number" ? { integerValue: String(v) } : { stringValue: v });
+const val = (v) => (v === null ? { nullValue: null } : typeof v === "boolean" ? { booleanValue: v } : typeof v === "number" ? { integerValue: String(v) } : { stringValue: v });
 
 function makeWorld(start = T0) {
   let t = start;
@@ -41,7 +41,10 @@ function makeWorld(start = T0) {
       const q = JSON.parse(init.body).structuredQuery;
       const coll = q.from[0].collectionId, store = coll === "tasks" ? tasks : tokens;
       let rows = [...store].filter(([, d]) => !q.where || matches(d, q.where));
-      if (q.orderBy) rows.sort((x, y) => fieldVal(x[1].fields.remindAt) - fieldVal(y[1].fields.remindAt));
+      if (q.orderBy) {
+        const f = q.orderBy[0].field.fieldPath;
+        rows.sort((x, y) => fieldVal(x[1].fields[f]) - fieldVal(y[1].fields[f]));
+      }
       if (q.limit) rows = rows.slice(0, q.limit);
       return json(200, rows.length ? rows.map(([id, d]) => ({ document: asDoc(coll, id, d) })) : [{}]);
     }
@@ -78,7 +81,12 @@ function makeWorld(start = T0) {
     sends, logs, deletedTokens, fcmReply, tasks,
     get userReads() { return userReads; },
     failUserReads: (v = true) => { failUserReads = v; },
-    addUser(uid, timeFormat) { users.set(uid, { updateTime: stamp(), fields: { timeFormat: val(timeFormat) } }); },
+    addUser(uid, timeFormat, nagMax) {
+      const fields = { timeFormat: val(timeFormat) };
+      if (nagMax !== undefined) fields.nagMax = val(nagMax);
+      users.set(uid, { updateTime: stamp(), fields });
+    },
+    field: (id, name) => { const f = tasks.get(id).fields[name]; return f === undefined ? undefined : f.nullValue !== undefined ? null : (f.booleanValue ?? Number(f.integerValue)); },
     now: () => t,
     setNow: (v) => { t = v; },
     at: (ms, fn) => schedule(t + ms, fn),                   // ejecuta algo (p. ej. "el usuario borra la tarea") en un instante
@@ -89,12 +97,22 @@ function makeWorld(start = T0) {
       log: (...a) => logs.push(a.join(" ")),
       getAccessToken: async () => "token",
     },
-    addTask(id, { due, uid = "u1", title = "Reunión", time = "10:30", remindMin = 0, notified = false, done = false }) {
-      tasks.set(id, { updateTime: stamp(), fields: {
+    addTask(id, { due, uid = "u1", title = "Reunión", time = "10:30", remindMin = 0, notified = false, done = false, nagMin, nagAt, nagCount }) {
+      const fields = {
         uid: val(uid), title: val(title), time: val(time), remindMin: val(remindMin), remindAt: val(due),
         notified: val(notified), done: val(done),
-      } });
+      };
+      if (nagMin !== undefined) fields.nagMin = val(nagMin);
+      if (nagAt !== undefined) fields.nagAt = val(nagAt);
+      if (nagCount !== undefined) fields.nagCount = val(nagCount);
+      tasks.set(id, { updateTime: stamp(), fields });
     },
+    // Una tarea que ya avisó y está en medio de una cadena de insistencias.
+    addNag(id, { nagAt, nagMin = 10, nagCount = 0, ...rest }) {
+      this.addTask(id, { due: nagAt - 3_600_000, notified: true, nagMin, nagAt, nagCount, ...rest });
+    },
+    // Simula una edición del usuario durante la espera.
+    edit(id, changes) { const d = tasks.get(id); for (const [k, v] of Object.entries(changes)) d.fields[k] = val(v); d.updateTime = "e" + stamp(); },
     addToken(token, uid = "u1") { tokens.set(token, { updateTime: stamp(), fields: { uid: val(uid) } }); },
     notified: (id) => tasks.get(id).fields.notified.booleanValue,
     // Avanza el reloj virtual hasta que termine la promesa.
@@ -363,4 +381,206 @@ test("formatTime del Worker da lo mismo que el del cliente en los 1440 minutos d
   for (const bad of ["", "9:30", "abc", null, undefined]) {
     assert.equal(formatTime(bad, "12"), clientFormat.formatTime(bad, "12"));
   }
+});
+
+/* ---------- Insistir hasta que se haga ---------- */
+const MIN = 60_000;
+
+test("sin insistencia no se programa nada: la tarea queda sin nagAt", async () => {
+  const w = makeWorld();
+  w.addTask("a", { due: T0 + 5_000, nagMin: 0 }); w.addToken("tokA");
+  await go(w);
+  assert.equal(w.field("a", "nagAt"), undefined);
+});
+
+test("con insistencia, el primer aviso programa la siguiente (hora del aviso + intervalo)", async () => {
+  const w = makeWorld(), due = T0 + 5_000;
+  w.addTask("a", { due, nagMin: 10 }); w.addToken("tokA");
+  assert.deepEqual(await go(w), ["sent"]);
+  assert.equal(w.field("a", "notified"), true);
+  assert.equal(w.field("a", "nagAt"), due + 10 * MIN);
+  assert.equal(w.field("a", "nagCount"), 0);
+});
+
+test("la insistencia se envía a su hora exacta con el texto 'Sigue pendiente (1 de 5)'", async () => {
+  const w = makeWorld(), at = T0 + 9_000;
+  w.addNag("a", { nagAt: at, nagMin: 10, time: "09:00" }); w.addToken("tokA");
+  assert.deepEqual(await go(w), ["sent"]);
+  assert.equal(w.sends.length, 1);
+  assert.equal(w.sends[0].at, at - CONFIG.LEAD_MS);
+  assert.equal(w.sends[0].body, "Sigue pendiente (1 de 5) · 09:00");
+  assert.equal(w.field("a", "nagAt"), at + 10 * MIN);
+  assert.equal(w.field("a", "nagCount"), 1);
+});
+
+test("la insistencia usa el formato de hora de la cuenta", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "12");
+  w.addNag("a", { nagAt: T0 + 5_000, time: "21:30" }); w.addToken("tokA");
+  await go(w);
+  assert.equal(w.sends[0].body, "Sigue pendiente (1 de 5) · 9:30 p. m.");
+});
+
+test("cadena completa: aviso + 3 insistencias a su hora, y luego se detiene", async () => {
+  const w = makeWorld(), due = T0 + 5_000;
+  w.addUser("u1", "24", 3);                               // máximo 3 insistencias
+  w.addTask("a", { due, nagMin: 5 }); w.addToken("tokA");
+  for (let m = 0; m < 40; m++) {                         // el cron corre cada minuto durante 40 minutos
+    w.setNow(Math.max(w.now(), T0 + m * MIN));
+    await go(w);
+  }
+  assert.deepEqual(w.sends.map((x) => x.at), [0, 5, 10, 15].map((k) => due + k * MIN - CONFIG.LEAD_MS));
+  assert.deepEqual(w.sends.map((x) => x.body), [
+    "Ahora · 10:30", "Sigue pendiente (1 de 3) · 10:30", "Sigue pendiente (2 de 3) · 10:30", "Sigue pendiente (3 de 3) · 10:30",
+  ]);
+  assert.equal(w.field("a", "nagAt"), null);              // la cadena terminó
+  assert.equal(w.field("a", "nagCount"), 3);
+});
+
+test("el máximo por defecto son 5 insistencias", async () => {
+  const w = makeWorld(), due = T0 + 5_000;
+  w.addTask("a", { due, nagMin: 5 }); w.addToken("tokA");
+  for (let m = 0; m < 45; m++) { w.setNow(Math.max(w.now(), T0 + m * MIN)); await go(w); }
+  assert.equal(w.sends.length, 1 + 5);
+});
+
+test("marcar el pendiente como hecho corta la cadena (no se vuelve a consultar)", async () => {
+  const w = makeWorld();
+  w.addNag("a", { nagAt: T0 + 5_000 }); w.addToken("tokA");
+  w.edit("a", { done: true });
+  assert.deepEqual(await go(w), []);
+  assert.equal(w.sends.length, 0);
+});
+
+test("si se completa mientras se espera la insistencia, no se envía", async () => {
+  const w = makeWorld();
+  w.addNag("a", { nagAt: T0 + 9_000 }); w.addToken("tokA");
+  w.at(3_000, () => w.edit("a", { done: true }));
+  assert.deepEqual(await go(w), ["done"]);
+  assert.equal(w.sends.length, 0);
+});
+
+test("si se borra mientras se espera la insistencia, no se envía", async () => {
+  const w = makeWorld();
+  w.addNag("a", { nagAt: T0 + 9_000 }); w.addToken("tokA");
+  w.at(3_000, () => w.tasks.delete("a"));
+  assert.deepEqual(await go(w), ["deleted"]);
+  assert.equal(w.sends.length, 0);
+});
+
+test("si se edita (cadena reiniciada) mientras se espera, no se envía la insistencia vieja", async () => {
+  const w = makeWorld();
+  w.addNag("a", { nagAt: T0 + 9_000 }); w.addToken("tokA");
+  w.at(3_000, () => w.edit("a", { nagCount: 0, nagAt: null, notified: false }));
+  assert.deepEqual(await go(w), ["reset"]);
+  assert.equal(w.sends.length, 0);
+});
+
+test("si solo se cambia el título mientras se espera, se envía con el título nuevo", async () => {
+  const w = makeWorld();
+  w.addNag("a", { nagAt: T0 + 9_000, title: "Viejo" }); w.addToken("tokA");
+  w.at(3_000, () => w.edit("a", { title: "Nuevo" }));
+  assert.deepEqual(await go(w), ["sent"]);
+  assert.equal(w.sends[0].title, "⏰ Nuevo");
+});
+
+test("si la cuenta baja el máximo por debajo de lo ya enviado, la cadena se corta sin enviar", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "24", 3);
+  w.addNag("a", { nagAt: T0 + 5_000, nagCount: 3 }); w.addToken("tokA");
+  assert.deepEqual(await go(w), ["nag-stopped"]);
+  assert.equal(w.sends.length, 0);
+  assert.equal(w.field("a", "nagAt"), null);
+});
+
+test("fallo temporal en una insistencia: se restaura la cadena y la siguiente ejecución reintenta", async () => {
+  const w = makeWorld(), at = T0 + 5_000;
+  w.addNag("a", { nagAt: at, nagCount: 1 }); w.addToken("tokA");
+  w.fcmReply.set("tokA", { status: 503, body: "caído" });
+  assert.deepEqual(await go(w), ["retry"]);
+  assert.equal(w.field("a", "nagAt"), at);
+  assert.equal(w.field("a", "nagCount"), 1);
+  w.fcmReply.delete("tokA");
+  assert.deepEqual(await go(w), ["sent"]);
+  assert.equal(w.field("a", "nagCount"), 2);
+});
+
+test("dos ejecuciones simultáneas no duplican una insistencia", async () => {
+  const w = makeWorld();
+  w.addNag("a", { nagAt: T0 + 10_000 }); w.addToken("tokA");
+  const out = await w.run(Promise.all([processReminders(ENV, w.deps), processReminders(ENV, w.deps)]));
+  assert.equal(w.sends.length, 1);
+  assert.deepEqual(out.flat().sort(), ["sent", "skipped"]);
+});
+
+test("tras una caída del Worker las insistencias atrasadas no salen en ráfaga: se envía una y se re-ancla desde ahora", async () => {
+  const w = makeWorld();
+  w.addNag("a", { nagAt: T0 - 30 * MIN, nagMin: 5 }); w.addToken("tokA");
+  assert.deepEqual(await go(w), ["sent"]);
+  assert.equal(w.field("a", "nagAt"), T0 + 5 * MIN);       // no T0 - 25 min
+  w.setNow(T0 + MIN);
+  assert.deepEqual(await go(w), []);                         // un minuto después no hay nada que enviar
+  assert.equal(w.sends.length, 1);
+});
+
+test("una insistencia atrasada más de 24 h se ignora", async () => {
+  const w = makeWorld();
+  w.addNag("a", { nagAt: T0 - CONFIG.WINDOW_MS - 1_000 }); w.addToken("tokA");
+  assert.deepEqual(await go(w), []);
+  assert.equal(w.sends.length, 0);
+});
+
+test("avisos e insistencias en la misma ejecución se atienden cada uno a su hora", async () => {
+  const w = makeWorld();
+  w.addTask("a", { due: T0 + 20_000, title: "Aviso" });
+  w.addNag("b", { nagAt: T0 + 5_000, title: "Insistencia" });
+  w.addToken("tokA");
+  assert.deepEqual((await go(w)).sort(), ["sent", "sent"]);
+  assert.deepEqual(w.sends.map((x) => x.title), ["⏰ Insistencia", "⏰ Aviso"]);
+});
+
+test("el lote se comparte: si los avisos lo llenan, las insistencias esperan a la siguiente ejecución", async () => {
+  const w = makeWorld();
+  w.addTask("a", { due: T0 + 5_000 });
+  w.addNag("b", { nagAt: T0 + 6_000 });
+  w.addToken("tokA");
+  assert.deepEqual(await go(w, { BATCH_LIMIT: 1 }), ["sent"]);
+  assert.equal(w.field("b", "nagCount"), 0);               // intacta
+});
+
+test("fallo temporal del primer aviso con insistencia: se deshace también la cadena programada", async () => {
+  const w = makeWorld();
+  w.addTask("a", { due: T0 + 5_000, nagMin: 10 }); w.addToken("tokA");
+  w.fcmReply.set("tokA", { status: 503, body: "caído" });
+  assert.deepEqual(await go(w), ["retry"]);
+  assert.equal(w.field("a", "notified"), false);
+  assert.equal(w.field("a", "nagAt"), null);
+});
+
+test("si se reprograma el primer aviso mientras se espera, tampoco queda una cadena programada", async () => {
+  const w = makeWorld();
+  w.addTask("a", { due: T0 + 9_000, nagMin: 10 }); w.addToken("tokA");
+  w.at(3_000, () => w.edit("a", { remindAt: T0 + 600_000 }));
+  assert.deepEqual(await go(w), ["rescheduled"]);
+  assert.equal(w.field("a", "notified"), false);
+  assert.equal(w.field("a", "nagAt"), null);
+});
+
+test("sin dispositivos registrados la cadena sigue: al registrar uno, las insistencias le llegan", async () => {
+  const w = makeWorld(), due = T0 + 5_000;
+  w.addTask("a", { due, nagMin: 5 });
+  assert.deepEqual(await go(w), ["no-devices"]);
+  w.addToken("tokA");
+  w.setNow(due + 5 * MIN - 20_000);
+  assert.deepEqual(await go(w), ["sent"]);
+});
+
+test("la última insistencia no deja otra programada (se corta en el acto, sin una escritura de más)", async () => {
+  const w = makeWorld();
+  w.addUser("u1", "24", 3);
+  w.addNag("a", { nagAt: T0 + 5_000, nagCount: 2 }); w.addToken("tokA");   // esta es la 3.ª y última
+  assert.deepEqual(await go(w), ["sent"]);
+  assert.equal(w.sends[0].body, "Sigue pendiente (3 de 3) · 10:30");
+  assert.equal(w.field("a", "nagAt"), null);
+  assert.equal(w.field("a", "nagCount"), 3);
 });
